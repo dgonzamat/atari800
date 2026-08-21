@@ -29,8 +29,9 @@
 #define SLONG signed int
 #define UBYTE unsigned char
 #define UWORD unsigned short
-#ifndef HAVE_WINDOWS_H
-/* Windows headers typedef ULONG */
+#if !defined(HAVE_WINDOWS_H) && !defined(ULONG)
+/* Windows headers typedef ULONG; libatari800.h defines it as uint32_t when
+   the public header is included first (as in libatari800/api.c). */
 #define ULONG unsigned int
 #endif
 /* Note: in various parts of the emulator we assume that char is 1 byte
