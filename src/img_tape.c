@@ -51,6 +51,7 @@ struct IMG_TAPE_t {
 	int next_blockbyte; /* Index of the byte in this block that will be read next (counted from 0) */
 	unsigned int current_block; /* Number of the currently-read/written block (counted from 0) */
 	int block_is_fsk; /* FALSE - current chunk's type  is "data", otherwise "fsk " */
+	int block_is_wav; /* TRUE if current chunk's type is "wavp" (see WAV_OpenAsCAS()) - mutually exclusive with block_is_fsk */
 	int block_length; /* Length of the block currently held in BUFFER */
 	int num_blocks; /* Number of data blocks in the whole file */
 	ULONG block_offsets[MAX_BLOCKS]; /* File offsets for each data block*/
@@ -92,9 +93,330 @@ end of the chunk.
 int IMG_TAPE_FileSupported(UBYTE const start_bytes[4])
 {
 	/* Note: doesn't detect raw binary files. */
-	return start_bytes[0] == 'F' && start_bytes[1] == 'U'
-	    && start_bytes[2] == 'J' && start_bytes[3] == 'I';
+	return (start_bytes[0] == 'F' && start_bytes[1] == 'U'
+	     && start_bytes[2] == 'J' && start_bytes[3] == 'I')
+	    || (start_bytes[0] == 'R' && start_bytes[1] == 'I'
+	     && start_bytes[2] == 'F' && start_bytes[3] == 'F');
 }
+
+/* --- WAV (raw audio) tape support --------------------------------------
+   Some cassette turbo loaders (e.g. the Chilean "TurboSoft"/STAC scheme)
+   use signal timing that plain CAS "fsk " chunks can't describe (custom
+   pulse-width protocols, not simple two-tone FSK). Real WAV captures of
+   such tapes don't have this problem: they hold the actual analog
+   waveform. To play them back we run the waveform through a
+   Schmitt-trigger comparator (the same technique real cassette players'
+   data separators - and Altirra's "load as audio" feature - use) and
+   re-express the result as a sequence of exact pulse widths, letting the
+   game's own loader routine decode the timing exactly as it would from
+   real tape hardware - we don't need to understand its protocol at all.
+
+   Note this is *not* stored as a CAS "fsk " chunk: "fsk " pulse widths are
+   16-bit values in 1/10 ms (100us) units, which is far too coarse for an
+   audio carrier - a ~5kHz FSK tone has a half-cycle around 100us itself,
+   so encoding it that way would quantize away the very distinction
+   between its MARK and SPACE tones. Instead we synthesize an in-memory
+   CAS-like stream using a private "wavp" chunk type that stores pulse
+   widths as exact, unquantized CPU-tick counts (32-bit), and give it its
+   own (tiny) playback branch in IMG_TAPE_Read()/IMG_TAPE_SerinStatus(),
+   alongside the existing "data"/"fsk " ones. */
+
+/* Hysteresis band, as a percentage of the peak sample amplitude in the
+   file. Wide enough to reject tape hiss, narrow enough to still catch a
+   soft recording. */
+enum { WAV_HYSTERESIS_PERCENT = 25 };
+
+/* Max number of pulse-width bytes that fit in a single "wavp" chunk - the
+   CAS chunk length field is a 16-bit byte count. Pulses are 4 bytes each. */
+enum { WAV_MAX_CHUNK_BYTES = 65532 };
+
+typedef struct {
+	FILE *out;                    /* Where finished chunks are flushed to */
+	UBYTE buffer[WAV_MAX_CHUNK_BYTES];
+	int buffer_used;
+} WAV_ChunkWriter;
+
+static void WAV_ChunkWriterInit(WAV_ChunkWriter *w, FILE *out)
+{
+	w->out = out;
+	w->buffer_used = 0;
+}
+
+/* Flush whatever pulses are queued as one "wavp" chunk. Safe to call with
+   an empty buffer (writes nothing). Returns FALSE on write error. */
+static int WAV_ChunkWriterFlush(WAV_ChunkWriter *w)
+{
+	CAS_Header header;
+	if (w->buffer_used == 0)
+		return TRUE;
+	memcpy(header.identifier, "wavp", 4);
+	header.length_lo = w->buffer_used & 0xFF;
+	header.length_hi = (w->buffer_used >> 8) & 0xFF;
+	header.aux_lo = 0;
+	header.aux_hi = 0;
+	if (fwrite(&header, 1, 8, w->out) != 8
+	    || fwrite(w->buffer, 1, w->buffer_used, w->out) != (size_t)w->buffer_used)
+		return FALSE;
+	w->buffer_used = 0;
+	return TRUE;
+}
+
+/* Queue one pulse-width value, in exact CPU ticks. Transparently flushes a
+   full chunk to disk. Returns FALSE on write error. */
+static int WAV_ChunkWriterAdd(WAV_ChunkWriter *w, ULONG duration_ticks)
+{
+	if (w->buffer_used + 4 > WAV_MAX_CHUNK_BYTES) {
+		if (!WAV_ChunkWriterFlush(w))
+			return FALSE;
+	}
+	w->buffer[w->buffer_used++] = duration_ticks & 0xFF;
+	w->buffer[w->buffer_used++] = (duration_ticks >> 8) & 0xFF;
+	w->buffer[w->buffer_used++] = (duration_ticks >> 16) & 0xFF;
+	w->buffer[w->buffer_used++] = (duration_ticks >> 24) & 0xFF;
+	return TRUE;
+}
+
+/* CPU (PAL/NTSC-ish 1.79MHz) ticks per audio sample at SAMPLE_RATE Hz. */
+static double WAV_TicksPerSample(int sample_rate)
+{
+	return 1789790.0 / sample_rate;
+}
+
+/* Emit a physical run of NUM_SAMPLES (at SAMPLE_RATE Hz) as one or more
+   pulses, splitting it only in the (practically unreachable) case of a
+   single run too long to fit a 32-bit tick count. */
+static int WAV_EmitRun(WAV_ChunkWriter *w, long num_samples, int sample_rate)
+{
+	double ticks_per_sample = WAV_TicksPerSample(sample_rate);
+	/* Largest sample count whose tick duration still fits in ULONG. */
+	long max_samples = (long)(4000000000.0 / ticks_per_sample);
+	while (num_samples > 0) {
+		long chunk_samples = num_samples > max_samples ? max_samples : num_samples;
+		ULONG duration_ticks = (ULONG)(chunk_samples * ticks_per_sample + 0.5);
+		if (duration_ticks < 1)
+			duration_ticks = 1;
+		if (!WAV_ChunkWriterAdd(w, duration_ticks))
+			return FALSE;
+		num_samples -= chunk_samples;
+	}
+	return TRUE;
+}
+
+/* Reads the WAV "fmt " and "data" sub-chunks. FILE must be positioned right
+   after the 12-byte "RIFF"/size/"WAVE" header. Returns FALSE if the file
+   isn't a supported (integer PCM) WAV. */
+static int WAV_ParseHeader(FILE *f, int *channels, int *sample_rate,
+                            int *bits_per_sample, long *data_offset, long *data_size)
+{
+	int have_fmt = FALSE;
+	*data_offset = -1;
+
+	for (;;) {
+		char id[4];
+		UBYTE size_bytes[4];
+		unsigned long size;
+		long chunk_start;
+
+		if (fread(id, 1, 4, f) != 4 || fread(size_bytes, 1, 4, f) != 4)
+			break;
+		size = (unsigned long) size_bytes[0] | ((unsigned long) size_bytes[1] << 8)
+		     | ((unsigned long) size_bytes[2] << 16) | ((unsigned long) size_bytes[3] << 24);
+		chunk_start = ftell(f);
+
+		if (memcmp(id, "fmt ", 4) == 0 && size >= 16) {
+			UBYTE fmt[16];
+			int audio_format;
+			if (fread(fmt, 1, 16, f) != 16)
+				break;
+			audio_format = fmt[0] | (fmt[1] << 8);
+			*channels = fmt[2] | (fmt[3] << 8);
+			*sample_rate = fmt[4] | (fmt[5] << 8) | (fmt[6] << 16) | (fmt[7] << 24);
+			*bits_per_sample = fmt[14] | (fmt[15] << 8);
+			/* Only plain integer PCM is supported. */
+			have_fmt = (audio_format == 1) && *channels > 0
+			        && (*bits_per_sample == 8 || *bits_per_sample == 16
+			            || *bits_per_sample == 24 || *bits_per_sample == 32);
+		}
+		else if (memcmp(id, "data", 4) == 0) {
+			*data_offset = chunk_start;
+			*data_size = (long) size;
+			if (have_fmt)
+				/* Both chunks found - the rest of the file doesn't matter. */
+				return TRUE;
+		}
+		/* Chunks are padded to an even number of bytes. */
+		if (fseek(f, chunk_start + size + (size & 1), SEEK_SET) != 0)
+			break;
+	}
+	return have_fmt && *data_offset >= 0;
+}
+
+/* Reads one frame's worth of bytes and returns the downmixed, sign-extended
+   sample value. */
+static long WAV_DownmixFrame(const UBYTE *p, int channels, int bytes_per_sample)
+{
+	long sum = 0;
+	int ch;
+	for (ch = 0; ch < channels; ch++) {
+		long v;
+		const UBYTE *s = p + ch * bytes_per_sample;
+		switch (bytes_per_sample) {
+		case 1:
+			v = (long) s[0] - 128; /* 8-bit WAV samples are unsigned */
+			break;
+		case 2:
+			v = (SWORD) (s[0] | (s[1] << 8));
+			break;
+		case 3:
+			v = (long) (s[0] | (s[1] << 8) | (s[2] << 16));
+			if (v & 0x800000)
+				v -= 0x1000000;
+			break;
+		default: /* 4 */
+			v = (long) (s[0] | (s[1] << 8) | (s[2] << 16) | ((unsigned long) s[3] << 24));
+			break;
+		}
+		sum += v;
+	}
+	return sum / channels;
+}
+
+enum { WAV_READ_FRAMES = 8192 };
+
+/* Converts the PCM data at DATA_OFFSET/DATA_SIZE in F into a synthetic CAS
+   byte stream (FUJI header + one or more "fsk " chunks), written to OUT.
+   Runs two passes over the audio: one to find the peak amplitude (needed
+   to size the comparator's hysteresis band), one to actually threshold it
+   into pulses. */
+static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per_sample,
+                             long data_offset, long data_size, FILE *out)
+{
+	int bytes_per_sample = bits_per_sample / 8;
+	int frame_size = bytes_per_sample * channels;
+	long num_frames = data_size / frame_size;
+	UBYTE *block;
+	long peak = 1; /* avoid a zero-width hysteresis band on silence */
+	int hi_thresh, lo_thresh;
+	int state;
+	long run_samples;
+	long frames_left;
+	WAV_ChunkWriter writer;
+	CAS_Header header;
+
+	if (num_frames <= 0 || frame_size <= 0)
+		return FALSE;
+	block = (UBYTE *) Util_malloc(WAV_READ_FRAMES * frame_size);
+
+	/* Pass 1: peak amplitude. */
+	if (fseek(f, data_offset, SEEK_SET) != 0) {
+		free(block);
+		return FALSE;
+	}
+	frames_left = num_frames;
+	while (frames_left > 0) {
+		long want = frames_left > WAV_READ_FRAMES ? WAV_READ_FRAMES : frames_left;
+		long got = (long) fread(block, frame_size, want, f);
+		long i;
+		if (got <= 0)
+			break;
+		for (i = 0; i < got; i++) {
+			long v = WAV_DownmixFrame(block + i * frame_size, channels, bytes_per_sample);
+			long a = v < 0 ? -v : v;
+			if (a > peak)
+				peak = a;
+		}
+		frames_left -= got;
+	}
+
+	/* Header: FUJI marker (empty description) + baud (unused by fsk, but
+	   every CAS file conventionally has one). */
+	memset(&header, 0, sizeof(header));
+	if (fwrite("FUJI", 1, 4, out) != 4 || fwrite(&header.length_lo, 1, 4, out) != 4)
+		goto fail;
+	header.aux_lo = DEFAULT_BAUDRATE & 0xFF;
+	header.aux_hi = DEFAULT_BAUDRATE >> 8;
+	if (fwrite("baud", 1, 4, out) != 4 || fwrite(&header.length_lo, 1, 4, out) != 4)
+		goto fail;
+
+	/* Pass 2: threshold into pulses with hysteresis. */
+	hi_thresh = (int) (peak * WAV_HYSTERESIS_PERCENT / 100);
+	lo_thresh = -hi_thresh;
+	WAV_ChunkWriterInit(&writer, out);
+	state = 0;
+	run_samples = 0;
+	if (fseek(f, data_offset, SEEK_SET) != 0)
+		goto fail;
+	frames_left = num_frames;
+	while (frames_left > 0) {
+		long want = frames_left > WAV_READ_FRAMES ? WAV_READ_FRAMES : frames_left;
+		long got = (long) fread(block, frame_size, want, f);
+		long i;
+		if (got <= 0)
+			break;
+		for (i = 0; i < got; i++) {
+			long v = WAV_DownmixFrame(block + i * frame_size, channels, bytes_per_sample);
+			int new_state = state;
+			if (state == 0 && v > hi_thresh)
+				new_state = 1;
+			else if (state == 1 && v < lo_thresh)
+				new_state = 0;
+			if (new_state != state) {
+				if (!WAV_EmitRun(&writer, run_samples, sample_rate))
+					goto fail;
+				run_samples = 0;
+				state = new_state;
+			}
+			run_samples++;
+		}
+		frames_left -= got;
+	}
+	if (run_samples > 0 && !WAV_EmitRun(&writer, run_samples, sample_rate))
+		goto fail;
+	if (!WAV_ChunkWriterFlush(&writer))
+		goto fail;
+
+	free(block);
+	return TRUE;
+fail:
+	free(block);
+	return FALSE;
+}
+
+/* Detects a WAV file and, if found, converts it into a synthetic in-memory
+   CAS file (via tmpfile()) holding the equivalent "fsk " pulse stream.
+   Returns the tmpfile (rewound, ready to be parsed as CAS), or NULL if F
+   isn't a supported WAV, or on error. Does not close or otherwise disturb
+   the position of FILE. */
+static FILE *WAV_OpenAsCAS(FILE *file)
+{
+	char riff_id[4], wave_id[4];
+	UBYTE size_bytes[4];
+	int channels, sample_rate, bits_per_sample;
+	long data_offset, data_size;
+	FILE *tmp;
+
+	if (fseek(file, 0, SEEK_SET) != 0
+	    || fread(riff_id, 1, 4, file) != 4
+	    || memcmp(riff_id, "RIFF", 4) != 0
+	    || fread(size_bytes, 1, 4, file) != 4
+	    || fread(wave_id, 1, 4, file) != 4
+	    || memcmp(wave_id, "WAVE", 4) != 0)
+		return NULL;
+
+	if (!WAV_ParseHeader(file, &channels, &sample_rate, &bits_per_sample, &data_offset, &data_size))
+		return NULL;
+
+	tmp = tmpfile();
+	if (tmp == NULL)
+		return NULL;
+	if (!WAV_ConvertToCAS(file, channels, sample_rate, bits_per_sample, data_offset, data_size, tmp)) {
+		fclose(tmp);
+		return NULL;
+	}
+	rewind(tmp);
+	return tmp;
+}
+/* --- end of WAV support -------------------------------------------------- */
 
 /* Write contents of the file's block buffer to file, as a separate record;
    then empty the buffer.
@@ -141,10 +463,82 @@ static int CassetteFlush(IMG_TAPE_t *file)
 	return TRUE;
 }
 
+/* Parses the CAS chunk stream in IMG->file (already positioned right after
+   the initial 6-byte FUJI header, whose already-read bytes are passed in
+   HEADER) into IMG's block table. Common tail for both real .CAS files and
+   the synthetic CAS stream WAV files are converted into (see
+   WAV_OpenAsCAS()). Returns FALSE on read error. */
+static int ParseCASBody(IMG_TAPE_t *img, CAS_Header *header, char const **description)
+{
+	UWORD length;
+	UWORD skip;
+	int blocks;
+	int baudrate = DEFAULT_BAUDRATE;
+
+	img->isCAS = TRUE;
+	fseek(img->file, 2L, SEEK_CUR);	/* ignore the aux bytes */
+
+	/* read or skip file description */
+	skip = length = header->length_lo | (header->length_hi << 8);
+	if (length < CASSETTE_DESCRIPTION_MAX)
+		skip = 0;
+	else
+		skip -= CASSETTE_DESCRIPTION_MAX - 1;
+	if (length > 0)
+		if (fread(img->description, 1, length - skip, img->file) < (length - skip))
+			return FALSE;
+	img->description[length - skip] = '\0';
+	fseek(img->file, skip, SEEK_CUR);
+
+	/* count number of blocks */
+	blocks = 0;
+	img->block_baudrates[0] = DEFAULT_BAUDRATE;
+	img->block_offsets[0] = ftell(img->file);
+	for (;;) {
+		CAS_Header h;
+		/* chunk header is always 8 bytes */
+		if (fread(&h, 1, 8, img->file) != 8)
+			break;
+		length = h.length_lo + (h.length_hi << 8);
+		if (h.identifier[0] == 'b' &&
+		    h.identifier[1] == 'a' &&
+		    h.identifier[2] == 'u' &&
+		    h.identifier[3] == 'd') {
+			baudrate = h.aux_lo + (h.aux_hi << 8);
+			img->block_offsets[blocks] += length + 8;
+		}
+		else if ((h.identifier[0] == 'd' &&
+		          h.identifier[1] == 'a' &&
+		          h.identifier[2] == 't' &&
+		          h.identifier[3] == 'a') ||
+		         (h.identifier[0] == 'f' &&
+		          h.identifier[1] == 's' &&
+		          h.identifier[2] == 'k' &&
+		          h.identifier[3] == ' ') ||
+		         (h.identifier[0] == 'w' &&
+		          h.identifier[1] == 'a' &&
+		          h.identifier[2] == 'v' &&
+		          h.identifier[3] == 'p')) {
+			img->block_baudrates[blocks] = baudrate;
+			if (++blocks >= MAX_BLOCKS) {
+				--blocks;
+				break;
+			}
+			img->block_offsets[blocks] = img->block_offsets[blocks - 1] + length + 8;
+		}
+		/* skip possibly present data block */
+		fseek(img->file, length, SEEK_CUR);
+	}
+	img->num_blocks = blocks;
+	*description = img->description;
+	return TRUE;
+}
+
 IMG_TAPE_t *IMG_TAPE_Open(char const *filename, int *writable, char const **description)
 {
 	IMG_TAPE_t *img;
 	CAS_Header header;
+	int got_header;
 
 	img = (IMG_TAPE_t *)Util_malloc(sizeof(IMG_TAPE_t));
 	/* Check if the file is writable. If not, recording will be disabled. */
@@ -159,71 +553,44 @@ IMG_TAPE_t *IMG_TAPE_Open(char const *filename, int *writable, char const **desc
 	}
 	img->description[0] = '\0';
 
-	if (fread(&header, 1, 6, img->file) == 6
+	got_header = fread(&header, 1, 6, img->file) == 6;
+
+	if (got_header
 		&& header.identifier[0] == 'F'
 		&& header.identifier[1] == 'U'
 		&& header.identifier[2] == 'J'
 		&& header.identifier[3] == 'I') {
 		/* CAS file */
-		UWORD length;
-		UWORD skip;
-		int blocks;
-		int baudrate = DEFAULT_BAUDRATE;
-
-		img->isCAS = TRUE;
-		fseek(img->file, 2L, SEEK_CUR);	/* ignore the aux bytes */
-
-		/* read or skip file description */
-		skip = length = header.length_lo | (header.length_hi << 8);
-		if (length < CASSETTE_DESCRIPTION_MAX)
-			skip = 0;
-		else
-			skip -= CASSETTE_DESCRIPTION_MAX - 1;
-		if (length > 0)
-			if (fread(img->description, 1, length - skip, img->file) < (length - skip)) {
-				fclose(img->file);
-				free(img);
-				return NULL;
-			}
-		img->description[length - skip] = '\0';
-		fseek(img->file, skip, SEEK_CUR);
-
-		/* count number of blocks */
-		blocks = 0;
-		img->block_baudrates[0] = DEFAULT_BAUDRATE;
-		img->block_offsets[0] = ftell(img->file);
-		for (;;) {
-			/* chunk header is always 8 bytes */
-			if (fread(&header, 1, 8, img->file) != 8)
-				break;
-			length = header.length_lo + (header.length_hi << 8);
-			if (header.identifier[0] == 'b' &&
-			    header.identifier[1] == 'a' &&
-			    header.identifier[2] == 'u' &&
-			    header.identifier[3] == 'd') {
-				baudrate=header.aux_lo + (header.aux_hi << 8);
-				img->block_offsets[blocks] += length + 8;
-			}
-			else if ((header.identifier[0] == 'd' &&
-			          header.identifier[1] == 'a' &&
-			          header.identifier[2] == 't' &&
-			          header.identifier[3] == 'a') ||
-			         (header.identifier[0] == 'f' &&
-			          header.identifier[1] == 's' &&
-			          header.identifier[2] == 'k' &&
-			          header.identifier[3] == ' ')) {
-				img->block_baudrates[blocks] = baudrate;
-				if (++blocks >= MAX_BLOCKS) {
-					--blocks;
-					break;
-				}
-				img->block_offsets[blocks] = img->block_offsets[blocks - 1] + length + 8;
-			}
-			/* skip possibly present data block */
-			fseek(img->file, length, SEEK_CUR);
+		if (!ParseCASBody(img, &header, description)) {
+			fclose(img->file);
+			free(img);
+			return NULL;
 		}
-		img->num_blocks = blocks;
-		*description = img->description;
+	}
+	else if (got_header
+		&& header.identifier[0] == 'R'
+		&& header.identifier[1] == 'I'
+		&& header.identifier[2] == 'F'
+		&& header.identifier[3] == 'F') {
+		/* WAV file: converted on the fly (see WAV_OpenAsCAS()) into an
+		   equivalent in-memory CAS "wavp" pulse stream, then parsed the
+		   same way as any other CAS file. */
+		FILE *cas_tmp = WAV_OpenAsCAS(img->file);
+		if (cas_tmp == NULL || fread(&header, 1, 6, cas_tmp) != 6) {
+			if (cas_tmp != NULL)
+				fclose(cas_tmp);
+			fclose(img->file);
+			free(img);
+			return NULL;
+		}
+		fclose(img->file);
+		img->file = cas_tmp;
+		if (!ParseCASBody(img, &header, description)) {
+			fclose(img->file);
+			free(img);
+			return NULL;
+		}
+		*writable = FALSE; /* WAV-derived tapes are playback-only */
 	}
 	else {
 		/* raw file */
@@ -342,11 +709,15 @@ static int ReadNextRecord(IMG_TAPE_t *file, int *gap)
 		    || fread(&header, 1, 8, file->file) < 8)
 			return FALSE;
 
-		/* Determine chunk type - can be either "fsk " or "data". */
+		/* Determine chunk type - "data", "fsk ", or the WAV-derived "wavp". */
 		file->block_is_fsk = header.identifier[0] == 'f' &&
 		                     header.identifier[1] == 's' &&
 		                     header.identifier[2] == 'k' &&
 		                     header.identifier[3] == ' ';
+		file->block_is_wav = header.identifier[0] == 'w' &&
+		                     header.identifier[1] == 'a' &&
+		                     header.identifier[2] == 'v' &&
+		                     header.identifier[3] == 'p';
 
 		length = header.length_lo + (header.length_hi << 8);
 		*gap = header.aux_lo + (header.aux_hi << 8);
@@ -357,6 +728,7 @@ static int ReadNextRecord(IMG_TAPE_t *file, int *gap)
 	}
 	else {
 		file->block_is_fsk = FALSE;
+		file->block_is_wav = FALSE;
 		length = 132;
 		/* Don't enlarge buffer - its default size is at least 132. */
 		*gap = (file->current_block == 0 ? 19200 : 260);
@@ -414,6 +786,16 @@ int IMG_TAPE_Read(IMG_TAPE_t *file, unsigned int *duration, int *is_gap, UBYTE *
 
 		/* Convert len from 1/10ms to CPU ticks. */
 		*duration = len * 178 + len * 9790 / 10000; /* (len * 1789790 / 10000), avoiding overflow */
+		*is_gap = TRUE;
+	} else if (file->block_is_wav) {
+		/* Compose a 32-bit little-endian CPU-tick count (see WAV_OpenAsCAS() -
+		   unlike "fsk ", this needs no unit conversion: it's already exact). */
+		unsigned int ticks = file->buffer[file->next_blockbyte++];
+		ticks |= ((unsigned int)file->buffer[file->next_blockbyte++]) << 8;
+		ticks |= ((unsigned int)file->buffer[file->next_blockbyte++]) << 16;
+		ticks |= ((unsigned int)file->buffer[file->next_blockbyte++]) << 24;
+
+		*duration = ticks;
 		*is_gap = TRUE;
 	} else {
 		*byte = file->buffer[file->next_blockbyte++];
@@ -510,6 +892,10 @@ int IMG_TAPE_SerinStatus(IMG_TAPE_t *file, int event_time_left)
 		   non-fsk branch below uses (and to the CAS format's own spec:
 		   an "fsk " chunk always begins with the SPACE signal). */
 		return (file->next_blockbyte / 2) & 1;
+	} else if (file->block_is_wav) {
+		/* Same parity trick as the fsk branch above, just over 4-byte
+		   (32-bit tick count) pulses instead of 2-byte ones. */
+		return (file->next_blockbyte / 4) & 1;
 	} else {
 		int bit = 0; /* 0: stop bit, 1: 7th bit, ..., 8: 0th bit, 9: start bit */
 
@@ -544,9 +930,9 @@ int IMG_TAPE_SkipToData(IMG_TAPE_t *file, int ms)
 
 	while (ms > 0) {
 		if (file->next_blockbyte < file->block_length) {
-			if (file->block_is_fsk) {
-				/* FSK blocks are not supported during reads with patched SIO,
-				   and skipped as a whole. */
+			if (file->block_is_fsk || file->block_is_wav) {
+				/* FSK/WAV blocks are not supported during reads with patched
+				   SIO, and skipped as a whole. */
 				file->next_blockbyte = file->block_length;
 			} else {
 				int bytes = ms * (file->isCAS ? file->block_baudrates[file->current_block] : 600) / 1000 / 10;
@@ -586,9 +972,9 @@ int IMG_TAPE_ReadToMemory(IMG_TAPE_t *file, UWORD dest_addr, int length)
 			return -1;
 		file->next_blockbyte = 0;
 	}
-	if (file->block_is_fsk)
-		/* FSK blocks are not supported during reads with patched SIO, and
-		   always cause read failure. */
+	if (file->block_is_fsk || file->block_is_wav)
+		/* FSK/WAV blocks are not supported during reads with patched SIO,
+		   and always cause read failure. */
 		return FALSE;
 
 	/* Copy record to memory, excluding the checksum byte if it exists. */
