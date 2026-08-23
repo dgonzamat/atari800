@@ -593,10 +593,55 @@ static int WAV_TryDecodeByte(const WAV_ToneRun *runs, long count, WAV_Cursor *cu
 /* Fewest decoded bytes required before accepting a candidate start-bit
    position - guards against a short lucky coincidence in noise/turbo data
    being mistaken for the start of a real standard-speed record. Combined
-   with the sync-byte check below (a real Atari tape record always starts
-   with two $55 sync bytes, written by the OS's own CSAVE routine), this
-   makes a false accept very unlikely. */
+   with the sync-byte check and checksum validation below (a real Atari
+   tape record always starts with two $55 sync bytes, written by the OS's
+   own CSAVE routine, and always ends with a trailing checksum byte - see
+   WAV_ChecksumValid()), this makes a false accept vanishingly unlikely. */
 enum { WAV_MIN_BOOTSTRAP_BYTES = 8 };
+
+/* Validates BYTES[0..N-1] as a real Atari SIO record: the last byte must
+   equal the checksum (sum-with-end-around-carry, matching sio.c's own
+   SIO_ChkSum()) of every byte before it. Requires at least 4 bytes (2 sync
+   + at least 1 content byte + the checksum itself) - shorter than that
+   isn't a meaningful checksum claim. */
+static int WAV_ChecksumValid(const UBYTE *bytes, long n)
+{
+	long i;
+	unsigned int sum = 0;
+	if (n < 4)
+		return FALSE;
+	for (i = 0; i < n - 1; i++) {
+		sum += bytes[i];
+		do {
+			sum = (sum & 0xff) + (sum >> 8);
+		} while (sum > 255);
+	}
+	return sum == bytes[n - 1];
+}
+
+/* Rejects a candidate whose content bytes (everything between the 2 sync
+   bytes + control byte and the trailing checksum byte) are all identical -
+   most commonly all zero. Tracing an actual boot found exactly this: a
+   flat, silent stretch between two real records decoded as a spurious but
+   checksum-*valid* all-zero "record", because for an all-identical-byte
+   payload the checksum is entirely determined by the sync+control bytes
+   alone (every content byte contributes the same fixed amount) - so
+   WAV_ChecksumValid() alone can't tell a genuine short all-zero record
+   from a long flat/silent run that happens to produce the right control
+   byte by chance. A real record's content is executable code or varied
+   data and essentially never uses a single repeated byte value throughout,
+   so this costs nothing against genuine records while closing that gap. */
+static int WAV_HasVariedContent(const UBYTE *bytes, long n)
+{
+	long i;
+	if (n < 5)
+		return TRUE;
+	for (i = 4; i < n - 1; i++) {
+		if (bytes[i] != bytes[3])
+			return TRUE;
+	}
+	return FALSE;
+}
 
 /* Longest bootstrap this will decode. Real boot loaders are typically a
    few hundred bytes; this is a generous ceiling, not a tuned expectation. */
@@ -614,11 +659,13 @@ enum { WAV_MAX_START_CANDIDATES = 8000 };
    a short inter-record gap, so a small budget finds it fast, while keeping
    the search from wandering deep into what is actually turbo-speed data
    and mistaking a coincidental short match there for a real record. */
-enum { WAV_BOOTSTRAP_CONTINUATION_CANDIDATES = 1500 };
+enum { WAV_BOOTSTRAP_CONTINUATION_CANDIDATES = 10000 };
 
 /* Upper bound on how many standard-speed segments WAV_ConvertToCAS() will
-   chain together, purely as a safety net against pathological input. */
-enum { WAV_MAX_BOOTSTRAP_SEGMENTS = 64 };
+   chain together, purely as a safety net against pathological input (a
+   real tape can genuinely have a few dozen - see the comment where this is
+   used). */
+enum { WAV_MAX_BOOTSTRAP_SEGMENTS = 256 };
 
 /* A "standard-speed" bootstrap isn't necessarily literally 600 baud - real
    tape decks and turbo-loader bootstraps commonly run a bit off that (this
@@ -645,16 +692,20 @@ enum { WAV_BOOTSTRAP_GOOD_ENOUGH_BYTES = 32 };
    *OUT_BOUNDARY to the position right after the last decoded byte - or
    *out_num_bytes to 0 (*OUT_BYTES NULL, *OUT_BOUNDARY zeroed) if no
    bootstrap was found at any candidate rate. Also sets *OUT_LEAD_SAMPLES to
-   the sample count skipped before the accepted start bit (the leader/gap
-   preceding it, measured from START_RUN_IDX). */
+   the sample count skipped before the accepted start bit, and
+   *OUT_LEAD_RUN_IDX to the run index the accepted candidate started at
+   (both measured from START_RUN_IDX) - the caller uses these to preserve
+   the actual lead-in audio (see the big comment at the call site on why a
+   bare gap duration isn't enough). */
 static void WAV_DecodeBootstrap(const WAV_ToneRun *runs, long count, long start_run_idx,
                                  long max_tries, int sample_rate,
                                  UBYTE **out_bytes, long *out_num_bytes, int *out_baud,
-                                 WAV_Cursor *out_boundary, long *out_lead_samples)
+                                 WAV_Cursor *out_boundary, long *out_lead_samples,
+                                 long *out_lead_run_idx)
 {
 	long baud_x10;
 	UBYTE *best_bytes = NULL;
-	long best_num_bytes = 0, best_lead_samples = 0;
+	long best_num_bytes = 0, best_lead_samples = 0, best_lead_run_idx = start_run_idx;
 	int best_baud = 0;
 	WAV_Cursor best_boundary;
 
@@ -687,7 +738,8 @@ static void WAV_DecodeBootstrap(const WAV_ToneRun *runs, long count, long start_
 					if (n >= WAV_MAX_BOOTSTRAP_BYTES)
 						break;
 				}
-				if (n >= WAV_MIN_BOOTSTRAP_BYTES && bytes[0] == 0x55 && bytes[1] == 0x55) {
+				if (n >= WAV_MIN_BOOTSTRAP_BYTES && bytes[0] == 0x55 && bytes[1] == 0x55
+				    && WAV_ChecksumValid(bytes, n) && WAV_HasVariedContent(bytes, n)) {
 					if (n > best_num_bytes) {
 						free(best_bytes);
 						best_bytes = bytes;
@@ -695,6 +747,7 @@ static void WAV_DecodeBootstrap(const WAV_ToneRun *runs, long count, long start_
 						best_baud = (int) (baud_x10 / 10);
 						best_boundary = cur;
 						best_lead_samples = lead_samples;
+						best_lead_run_idx = search.run_idx;
 						bytes = NULL;
 					}
 					if (best_num_bytes >= WAV_BOOTSTRAP_GOOD_ENOUGH_BYTES) {
@@ -714,6 +767,7 @@ done:
 	*out_baud = best_baud;
 	*out_boundary = best_boundary;
 	*out_lead_samples = best_lead_samples;
+	*out_lead_run_idx = best_lead_run_idx;
 }
 
 /* Converts the PCM data at DATA_OFFSET/DATA_SIZE in F into a synthetic CAS
@@ -804,72 +858,122 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 	if (fwrite("baud", 1, 4, out) != 4 || fwrite(&header.length_lo, 1, 4, out) != 4)
 		goto fail;
 
-	/* Look for a standard-speed bootstrap at the very start and, if found,
-	   write it as a real "data" chunk (see the big comment above), at
-	   whatever baud rate it actually decoded at (a real recording's
-	   bootstrap segment isn't necessarily exactly DEFAULT_BAUDRATE). A
-	   real boot loader is very often more than one such record (e.g. a
-	   short boot header record followed by the loader code itself, each
-	   read via its own SIO call) - decoding only the first one leaves the
-	   OS's stock reader trying to read a second record's worth of bytes
-	   out of what would otherwise be raw "wavp" signal, which can never
-	   satisfy it (see the big comment above) and times out. So keep
-	   chasing further segments, immediately after each one just decoded,
-	   until either none is found (real turbo-speed data has begun), a
-	   standard Atari cassette EOF record (control byte $FE - see the
-	   raw-binary-format branch of ReadNextRecord() above, which writes
-	   this exact convention) is decoded - the OS's own boot reader stops
-	   issuing further SIO reads once it sees one, so searching past it
-	   would only risk a coincidental false match inside genuine
-	   turbo-speed data - or the safety cap is hit. */
+	/* Look for standard-speed (UART-framed) records throughout the file and
+	   write each one as a real "data" chunk (see the big comment above), at
+	   whatever baud rate it actually decoded at (a real recording's records
+	   aren't necessarily exactly DEFAULT_BAUDRATE). This isn't just a short
+	   boot header: tracing an actual boot against this file showed the OS
+	   successfully reading and checksum-validating a real 132-byte record,
+	   then a second one - at which point it tries to read a THIRD record
+	   the same way, which can never succeed against un-decoded "wavp"
+	   signal (see the big comment above) and times out. Checking further
+	   confirmed a decodable, checksum-valid record immediately follows the
+	   second one too - and another after that, for dozens of records in a
+	   row, all the same length and all validating against the real Atari
+	   SIO checksum (WAV_ChecksumValid() below) - so this keeps decoding
+	   consecutive records for as long as they're found, not just the first
+	   one or two. (An earlier version of this stopped at a record whose
+	   control byte was $FE, reasoning that's the standard Atari cassette
+	   EOF marker - see the raw-binary-format branch of ReadNextRecord()
+	   above, which writes that exact convention. That reasoning doesn't
+	   hold here: plenty of further checksum-valid records follow such a
+	   record in this file, with an entirely different, non-standard
+	   control byte of their own - evidently this tape's own protocol
+	   doesn't treat $FE as an end-of-data signal the way CLOAD-style files
+	   do, so an EOF-shaped record is just accepted like any other.) This
+	   stops once no further record validates - real turbo-speed signal
+	   with a different structure has begun - or the safety cap is hit;
+	   WAV_ChecksumValid() (required for every accepted record, not just a
+	   sync-and-length heuristic) is what keeps a long, generously-budgeted
+	   search like this from mistaking a coincidental short match deep in
+	   that turbo-speed signal for a real record.
+
+	   Between records, the audio isn't silence - tracing a boot showed the
+	   OS's leader-tone detector ($ED3D) measuring the actual *period* of
+	   toggling on the tape to reconfirm sync before each record, and timing
+	   straight out to a device-timeout status if that toggling never
+	   arrives. An earlier version of this collapsed each inter-record gap
+	   into a single bare "wait GAP ms, then read" header field on the
+	   following "data" chunk - which reads as a flat, unchanging level for
+	   that whole span (see IMG_TAPE_SerinStatus()'s "data" branch: no
+	   bytes consumed yet reads as pure MARK), giving $ED3D nothing to
+	   measure and reproducing exactly that timeout. So instead, the actual
+	   lead-in audio between records is preserved as real "wavp" pulses
+	   (interleaved with the "data" chunks below via repeated WAV_ChunkWriter
+	   flushes) - whatever genuine leader tone or other signal is really
+	   there on the tape, rather than a synthetic flat gap standing in for
+	   it. */
+	WAV_ChunkWriterInit(&writer, out);
+	ok = TRUE;
 	boundary.run_idx = 0;
 	boundary.offset = 0;
 	{
 		int segment;
-		for (segment = 0; segment < WAV_MAX_BOOTSTRAP_SEGMENTS; segment++) {
+		for (segment = 0; ok && segment < WAV_MAX_BOOTSTRAP_SEGMENTS; segment++) {
 			long search_from = boundary.run_idx;
+			long search_from_offset = boundary.offset;
 			long max_tries = segment == 0 ? WAV_MAX_START_CANDIDATES
 			                               : WAV_BOOTSTRAP_CONTINUATION_CANDIDATES;
-			long lead_ms;
+			long lead_run_idx;
 			CAS_Header data_header;
-			int is_eof_record;
 
 			WAV_DecodeBootstrap(collect_ctx.runs, collect_ctx.count, search_from, max_tries,
 			                     sample_rate, &bootstrap_bytes, &bootstrap_num_bytes,
-			                     &bootstrap_baud, &boundary, &bootstrap_lead_samples);
+			                     &bootstrap_baud, &boundary, &bootstrap_lead_samples,
+			                     &lead_run_idx);
 			if (bootstrap_num_bytes <= 0) {
 				boundary.run_idx = search_from;
-				boundary.offset = 0;
+				boundary.offset = search_from_offset;
 				break;
 			}
-			is_eof_record = bootstrap_num_bytes >= 3 && bootstrap_bytes[2] == 0xfe;
 
-			lead_ms = bootstrap_lead_samples * 1000L / sample_rate;
-			if (lead_ms > 0xFFFF)
-				lead_ms = 0xFFFF;
+			/* Preserve the real lead-in audio as "wavp" pulses (see the big
+			   comment above), priming with a 1-sample throwaway pulse when
+			   the true starting level is MARK, same as "wavp"'s own
+			   parity-based level convention requires at the start of any
+			   chunk (see IMG_TAPE_SerinStatus()'s "wavp" branch). */
+			if (lead_run_idx > search_from) {
+				int true_level = collect_ctx.runs[search_from].level;
+				long first_remaining = collect_ctx.runs[search_from].duration - search_from_offset;
+				if (true_level != 0)
+					ok = WAV_EmitRun(&writer, 1, sample_rate);
+				if (ok && first_remaining > 0)
+					ok = WAV_EmitRun(&writer, first_remaining, sample_rate);
+				for (i = search_from + 1; ok && i < lead_run_idx; i++)
+					ok = WAV_EmitRun(&writer, collect_ctx.runs[i].duration, sample_rate);
+				if (ok)
+					ok = WAV_ChunkWriterFlush(&writer);
+			}
+			if (!ok) {
+				free(bootstrap_bytes);
+				break;
+			}
+
 			memset(&data_header, 0, sizeof(data_header));
 			data_header.aux_lo = bootstrap_baud & 0xFF;
 			data_header.aux_hi = (bootstrap_baud >> 8) & 0xFF;
 			if (fwrite("baud", 1, 4, out) != 4 || fwrite(&data_header.length_lo, 1, 4, out) != 4) {
 				free(bootstrap_bytes);
-				goto fail;
+				ok = FALSE;
+				break;
 			}
 			memcpy(data_header.identifier, "data", 4);
 			data_header.length_lo = bootstrap_num_bytes & 0xFF;
 			data_header.length_hi = (bootstrap_num_bytes >> 8) & 0xFF;
-			data_header.aux_lo = lead_ms & 0xFF;
-			data_header.aux_hi = (lead_ms >> 8) & 0xFF;
+			data_header.aux_lo = 0; /* the gap is now real "wavp" pulses, above */
+			data_header.aux_hi = 0;
 			if (fwrite(&data_header, 1, 8, out) != 8
 			    || fwrite(bootstrap_bytes, 1, bootstrap_num_bytes, out) != (size_t) bootstrap_num_bytes) {
 				free(bootstrap_bytes);
-				goto fail;
+				ok = FALSE;
+				break;
 			}
 			free(bootstrap_bytes);
 			bootstrap_bytes = NULL;
-			if (is_eof_record)
-				break;
 		}
 	}
+	if (!ok)
+		goto fail;
 	/* Restore the default rate for anything after the last decoded record
 	   (moot for "wavp", which ignores it, but keeps block_baudrates[]
 	   consistent for any future reader/tooling that inspects it). Written
@@ -884,14 +988,9 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 			goto fail;
 	}
 
-	/* Emit whatever's left (from the bootstrap decode's boundary, or from
-	   the very start if no bootstrap was found) as "wavp" pulses. Since
-	   "wavp"'s parity-based level convention assumes the first pulse of a
-	   chunk is always SPACE, and the true level here may be MARK, prime
-	   it with a 1-sample throwaway pulse when needed so parity lines up
-	   with the real signal from here on. */
-	WAV_ChunkWriterInit(&writer, out);
-	ok = TRUE;
+	/* Emit whatever's left (from the last decode boundary, or from the very
+	   start if no bootstrap was found at all) as "wavp" pulses - same
+	   priming-for-parity logic as each inter-record lead-in above. */
 	if (boundary.run_idx < collect_ctx.count) {
 		int true_level = collect_ctx.runs[boundary.run_idx].level;
 		long remaining = collect_ctx.runs[boundary.run_idx].duration - boundary.offset;
