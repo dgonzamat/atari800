@@ -41,16 +41,6 @@ enum { DEFAULT_BUFFER_SIZE = 132 };
 /* Baudrate for all written blocks and for reading from raw files. */
 enum { DEFAULT_BAUDRATE = 600 };
 
-/* Standard Atari cassette FSK carrier tones (Hz): SPACE encodes a "0" bit,
-   MARK encodes a "1" bit. An "fsk " chunk's steady mark/space tone must be
-   played as an oscillating carrier at these frequencies - not as a flat,
-   non-toggling signal level - because turbo loaders that bit-bang SKSTAT
-   directly (bypassing the OS's byte-oriented SIO) measure the actual
-   transitions to synchronize themselves. CPU_TICKS_PER_SEC matches the NTSC
-   POKEY clock already used for every other tick conversion in this file. */
-enum { FSK_SPACE_HZ = 3995, FSK_MARK_HZ = 5327 };
-enum { CPU_TICKS_PER_SEC = 1789790 };
-
 struct IMG_TAPE_t {
 	FILE *file; /* Stream for reading/writing of the tape image */
 	int isCAS; /* Indicates if the file is in CAS format, or a raw binary file */
@@ -61,9 +51,6 @@ struct IMG_TAPE_t {
 	int next_blockbyte; /* Index of the byte in this block that will be read next (counted from 0) */
 	unsigned int current_block; /* Number of the currently-read/written block (counted from 0) */
 	int block_is_fsk; /* FALSE - current chunk's type  is "data", otherwise "fsk " */
-	long fsk_word_ticks_left; /* CPU ticks left of the current fsk word's steady tone */
-	int fsk_word_is_mark; /* Which tone the current fsk word represents (chunk starts at SPACE, alternates) */
-	int fsk_carrier_level; /* Current oscillating polarity of the synthesized carrier, as read via SerinStatus */
 	int block_length; /* Length of the block currently held in BUFFER */
 	int num_blocks; /* Number of data blocks in the whole file */
 	ULONG block_offsets[MAX_BLOCKS]; /* File offsets for each data block*/
@@ -360,14 +347,6 @@ static int ReadNextRecord(IMG_TAPE_t *file, int *gap)
 		                     header.identifier[1] == 's' &&
 		                     header.identifier[2] == 'k' &&
 		                     header.identifier[3] == ' ';
-		/* A new "fsk " chunk starts a fresh SPACE/MARK carrier sequence
-		   (spec: "starts with the SPACE signal"); reset the oscillator so
-		   state from a previous fsk chunk never leaks in. */
-		if (file->block_is_fsk) {
-			file->fsk_word_ticks_left = 0;
-			file->fsk_word_is_mark = FALSE;
-			file->fsk_carrier_level = 0;
-		}
 
 		length = header.length_lo + (header.length_hi << 8);
 		*gap = header.aux_lo + (header.aux_hi << 8);
@@ -429,42 +408,12 @@ int IMG_TAPE_Read(IMG_TAPE_t *file, unsigned int *duration, int *is_gap, UBYTE *
 	}
 
 	if (file->block_is_fsk) {
-		unsigned int half_period;
+		/* Compose a 16-bit word with length of a signal in 1/10 of ms. */
+		unsigned int len = file->buffer[file->next_blockbyte++];
+		len |= ((unsigned int)file->buffer[file->next_blockbyte++]) << 8;
 
-		if (file->fsk_word_ticks_left <= 0) {
-			/* Current steady tone is exhausted (or this is the first one) -
-			   load the next word (length of the next steady tone, in 1/10ms)
-			   and flip which tone it is. Chunk starts at SPACE (spec). */
-			unsigned int len;
-			if (file->next_blockbyte + 1 >= file->block_length) {
-				/* Malformed/truncated chunk: no more whole words. Treat as
-				   end of this record so ReadNextRecord() moves on. */
-				file->next_blockbyte = file->block_length;
-				*duration = 1;
-				*is_gap = TRUE;
-				return TRUE;
-			}
-			len = file->buffer[file->next_blockbyte++];
-			len |= ((unsigned int)file->buffer[file->next_blockbyte++]) << 8;
-			file->fsk_word_is_mark = !file->fsk_word_is_mark;
-			/* Convert len from 1/10ms to CPU ticks (len * 1789790 / 10000,
-			   avoiding overflow). */
-			file->fsk_word_ticks_left = len * 178 + len * 9790 / 10000;
-		}
-
-		/* Split the steady tone into individual carrier half-cycles so the
-		   signal genuinely oscillates while it plays, instead of holding a
-		   single flat level for the tone's whole duration. */
-		half_period = CPU_TICKS_PER_SEC /
-		              (2 * (file->fsk_word_is_mark ? FSK_MARK_HZ : FSK_SPACE_HZ));
-		if (half_period == 0)
-			half_period = 1;
-		if ((long)half_period > file->fsk_word_ticks_left)
-			half_period = (unsigned int)(file->fsk_word_ticks_left > 0 ? file->fsk_word_ticks_left : 1);
-		file->fsk_word_ticks_left -= half_period;
-		file->fsk_carrier_level = !file->fsk_carrier_level;
-
-		*duration = half_period;
+		/* Convert len from 1/10ms to CPU ticks. */
+		*duration = len * 178 + len * 9790 / 10000; /* (len * 1789790 / 10000), avoiding overflow */
 		*is_gap = TRUE;
 	} else {
 		*byte = file->buffer[file->next_blockbyte++];
@@ -553,11 +502,14 @@ int IMG_TAPE_SerinStatus(IMG_TAPE_t *file, int event_time_left)
 	if (file->was_writing || file->next_blockbyte == 0)
 		return 1;
 	if (file->block_is_fsk) {
-		/* Report the carrier's actual, currently-oscillating polarity (see
-		   IMG_TAPE_Read()) rather than a flat level for the whole tone - a
-		   turbo loader reading this bit directly needs to see it toggle at
-		   the real MARK/SPACE frequency to synchronize itself. */
-		return file->fsk_carrier_level;
+		/* Signal can be computed from current position in the block -
+		   first 2 bytes are SPACE (0), each next 2 bytes alternate between
+		   MARK (1) and SPACE (0). The previous "~x & 1" here started the
+		   chunk at MARK instead of SPACE - inverted relative to both this
+		   comment and the "mark tone"=1 / "space tone"=0 convention the
+		   non-fsk branch below uses (and to the CAS format's own spec:
+		   an "fsk " chunk always begins with the SPACE signal). */
+		return (file->next_blockbyte / 2) & 1;
 	} else {
 		int bit = 0; /* 0: stop bit, 1: 7th bit, ..., 8: 0th bit, 9: start bit */
 
