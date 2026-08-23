@@ -283,11 +283,161 @@ static long WAV_DownmixFrame(const UBYTE *p, int channels, int bytes_per_sample)
 
 enum { WAV_READ_FRAMES = 8192 };
 
+/* Callback used by WAV_ScanHalfCycles(): called once per half-cycle (the
+   run of samples between two consecutive amplitude-threshold crossings),
+   with its length in samples. Returns FALSE to abort the scan. */
+typedef int (*WAV_HalfCycleFn)(void *ctx, long run_samples);
+
+/* Runs the amplitude Schmitt-trigger comparator over the whole PCM data
+   and calls FN once per half-cycle. This is the shared core of both the
+   frequency-calibration pass and the final classify-and-emit pass below -
+   both need the exact same sequence of half-cycle lengths. */
+static int WAV_ScanHalfCycles(FILE *f, int channels, int bytes_per_sample, int frame_size,
+                               long data_offset, long num_frames, UBYTE *block,
+                               int hi_thresh, int lo_thresh, WAV_HalfCycleFn fn, void *ctx)
+{
+	int state = 0;
+	long run_samples = 0;
+	long frames_left;
+
+	if (fseek(f, data_offset, SEEK_SET) != 0)
+		return FALSE;
+	frames_left = num_frames;
+	while (frames_left > 0) {
+		long want = frames_left > WAV_READ_FRAMES ? WAV_READ_FRAMES : frames_left;
+		long got = (long) fread(block, frame_size, want, f);
+		long i;
+		if (got <= 0)
+			break;
+		for (i = 0; i < got; i++) {
+			long v = WAV_DownmixFrame(block + i * frame_size, channels, bytes_per_sample);
+			int new_state = state;
+			if (state == 0 && v > hi_thresh)
+				new_state = 1;
+			else if (state == 1 && v < lo_thresh)
+				new_state = 0;
+			if (new_state != state) {
+				if (!fn(ctx, run_samples))
+					return FALSE;
+				run_samples = 0;
+				state = new_state;
+			}
+			run_samples++;
+		}
+		frames_left -= got;
+	}
+	if (run_samples > 0 && !fn(ctx, run_samples))
+		return FALSE;
+	return TRUE;
+}
+
+/* Longest half-cycle length (in samples) tracked by the frequency
+   histogram below; longer runs (silence, leader gaps) are folded into the
+   last bucket - harmless, since they land far from the two tone clusters
+   the histogram is trying to separate. */
+enum { WAV_HIST_SIZE = 256 };
+
+typedef struct {
+	unsigned long hist[WAV_HIST_SIZE];
+} WAV_HistCtx;
+
+static int WAV_HistCollect(void *ctx_, long run_samples)
+{
+	WAV_HistCtx *ctx = (WAV_HistCtx *) ctx_;
+	long idx = run_samples < 0 ? 0 : run_samples;
+	if (idx >= WAV_HIST_SIZE)
+		idx = WAV_HIST_SIZE - 1;
+	ctx->hist[idx]++;
+	return TRUE;
+}
+
+/* A real cassette player demodulates its two-tone FSK carrier in hardware
+   before POKEY ever sees it: what the OS's tape-reading routine expects is
+   a clean signal that only changes level at bit boundaries, not one
+   transition per carrier half-cycle. WAV_ScanHalfCycles() above gives us
+   the raw carrier's half-cycle lengths (in samples) - this splits them
+   into the two tone-frequency clusters (a classic 2-means/Otsu-style split
+   on the length histogram: converge a boundary so everything shorter than
+   it - the higher-frequency tone - is one cluster, everything at or above
+   it is the other), so the caller can classify and merge runs into a
+   demodulated squarewave. Returns the boundary length. */
+static long WAV_HistThreshold(const unsigned long *hist)
+{
+	long threshold, i;
+	double total = 0, sum = 0;
+
+	for (i = 0; i < WAV_HIST_SIZE; i++) {
+		total += hist[i];
+		sum += (double) i * hist[i];
+	}
+	if (total == 0)
+		return 1;
+	threshold = (long) (sum / total + 0.5);
+	for (i = 0; i < 16; i++) {
+		double sumA = 0, countA = 0, sumB = 0, countB = 0;
+		long j, new_threshold;
+		for (j = 0; j < WAV_HIST_SIZE; j++) {
+			if (j < threshold) {
+				sumA += (double) j * hist[j];
+				countA += hist[j];
+			}
+			else {
+				sumB += (double) j * hist[j];
+				countB += hist[j];
+			}
+		}
+		if (countA == 0 || countB == 0)
+			break;
+		new_threshold = (long) ((sumA / countA + sumB / countB) / 2.0 + 0.5);
+		if (new_threshold == threshold)
+			break;
+		threshold = new_threshold;
+	}
+	return threshold < 1 ? 1 : threshold;
+}
+
+typedef struct {
+	WAV_ChunkWriter *writer;
+	int sample_rate;
+	long threshold;
+	int tone; /* -1 = none merged yet, 0 = short (high-frequency) tone, 1 = long (low-frequency) tone */
+	long merged_samples;
+} WAV_EmitCtx;
+
+/* Classifies each half-cycle against the calibrated threshold and merges
+   consecutive same-tone runs, only calling WAV_EmitRun() - i.e. only
+   emitting an output pulse - when the classified tone actually changes.
+   This is the demodulation step: it turns many carrier half-cycles of the
+   same tone into the single bit-aligned pulse a real demodulator would
+   have produced. */
+static int WAV_EmitClassified(void *ctx_, long run_samples)
+{
+	WAV_EmitCtx *ctx = (WAV_EmitCtx *) ctx_;
+	int tone = run_samples < ctx->threshold ? 0 : 1;
+
+	if (ctx->tone == -1) {
+		ctx->tone = tone;
+		ctx->merged_samples = run_samples;
+		return TRUE;
+	}
+	if (tone != ctx->tone) {
+		if (!WAV_EmitRun(ctx->writer, ctx->merged_samples, ctx->sample_rate))
+			return FALSE;
+		ctx->tone = tone;
+		ctx->merged_samples = run_samples;
+	}
+	else
+		ctx->merged_samples += run_samples;
+	return TRUE;
+}
+
 /* Converts the PCM data at DATA_OFFSET/DATA_SIZE in F into a synthetic CAS
-   byte stream (FUJI header + one or more "fsk " chunks), written to OUT.
-   Runs two passes over the audio: one to find the peak amplitude (needed
-   to size the comparator's hysteresis band), one to actually threshold it
-   into pulses. */
+   byte stream (FUJI header + one or more "wavp" chunks), written to OUT.
+   Three passes over the audio: one to find the peak amplitude (needed to
+   size the comparator's hysteresis band), one to calibrate the tone
+   frequencies actually present in this recording (see WAV_HistThreshold()),
+   and one to demodulate the carrier into pulses using that calibration
+   (see WAV_EmitClassified()). */
 static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per_sample,
                              long data_offset, long data_size, FILE *out)
 {
@@ -297,11 +447,11 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 	UBYTE *block;
 	long peak = 1; /* avoid a zero-width hysteresis band on silence */
 	int hi_thresh, lo_thresh;
-	int state;
-	long run_samples;
 	long frames_left;
 	WAV_ChunkWriter writer;
 	CAS_Header header;
+	WAV_HistCtx hist_ctx;
+	WAV_EmitCtx emit_ctx;
 
 	if (num_frames <= 0 || frame_size <= 0)
 		return FALSE;
@@ -328,7 +478,7 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 		frames_left -= got;
 	}
 
-	/* Header: FUJI marker (empty description) + baud (unused by fsk, but
+	/* Header: FUJI marker (empty description) + baud (unused by wavp, but
 	   every CAS file conventionally has one). */
 	memset(&header, 0, sizeof(header));
 	if (fwrite("FUJI", 1, 4, out) != 4 || fwrite(&header.length_lo, 1, 4, out) != 4)
@@ -338,39 +488,28 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 	if (fwrite("baud", 1, 4, out) != 4 || fwrite(&header.length_lo, 1, 4, out) != 4)
 		goto fail;
 
-	/* Pass 2: threshold into pulses with hysteresis. */
 	hi_thresh = (int) (peak * WAV_HYSTERESIS_PERCENT / 100);
 	lo_thresh = -hi_thresh;
-	WAV_ChunkWriterInit(&writer, out);
-	state = 0;
-	run_samples = 0;
-	if (fseek(f, data_offset, SEEK_SET) != 0)
+
+	/* Pass 2: histogram the carrier's half-cycle lengths, then calibrate a
+	   frequency threshold that separates this recording's two tones. */
+	memset(&hist_ctx, 0, sizeof(hist_ctx));
+	if (!WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
+	                         block, hi_thresh, lo_thresh, WAV_HistCollect, &hist_ctx))
 		goto fail;
-	frames_left = num_frames;
-	while (frames_left > 0) {
-		long want = frames_left > WAV_READ_FRAMES ? WAV_READ_FRAMES : frames_left;
-		long got = (long) fread(block, frame_size, want, f);
-		long i;
-		if (got <= 0)
-			break;
-		for (i = 0; i < got; i++) {
-			long v = WAV_DownmixFrame(block + i * frame_size, channels, bytes_per_sample);
-			int new_state = state;
-			if (state == 0 && v > hi_thresh)
-				new_state = 1;
-			else if (state == 1 && v < lo_thresh)
-				new_state = 0;
-			if (new_state != state) {
-				if (!WAV_EmitRun(&writer, run_samples, sample_rate))
-					goto fail;
-				run_samples = 0;
-				state = new_state;
-			}
-			run_samples++;
-		}
-		frames_left -= got;
-	}
-	if (run_samples > 0 && !WAV_EmitRun(&writer, run_samples, sample_rate))
+
+	/* Pass 3: demodulate - classify each half-cycle against the calibrated
+	   threshold and emit one pulse per merged same-tone run. */
+	WAV_ChunkWriterInit(&writer, out);
+	emit_ctx.writer = &writer;
+	emit_ctx.sample_rate = sample_rate;
+	emit_ctx.threshold = WAV_HistThreshold(hist_ctx.hist);
+	emit_ctx.tone = -1;
+	emit_ctx.merged_samples = 0;
+	if (!WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
+	                         block, hi_thresh, lo_thresh, WAV_EmitClassified, &emit_ctx))
+		goto fail;
+	if (emit_ctx.tone != -1 && !WAV_EmitRun(&writer, emit_ctx.merged_samples, sample_rate))
 		goto fail;
 	if (!WAV_ChunkWriterFlush(&writer))
 		goto fail;
