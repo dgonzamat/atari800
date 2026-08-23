@@ -284,9 +284,16 @@ static long WAV_DownmixFrame(const UBYTE *p, int channels, int bytes_per_sample)
 enum { WAV_READ_FRAMES = 8192 };
 
 /* Callback used by WAV_ScanHalfCycles(): called once per half-cycle (the
-   run of samples between two consecutive amplitude-threshold crossings),
-   with its length in samples. Returns FALSE to abort the scan. */
-typedef int (*WAV_HalfCycleFn)(void *ctx, long run_samples);
+   run of samples between two consecutive amplitude-threshold crossings).
+   RUN_SAMPLES is that half-cycle's true length, to be used for timing.
+   SMOOTHED_SAMPLES is a 3-tap moving average of the current and previous
+   two half-cycle lengths, to be used for tone classification instead -
+   at only ~4-6 samples per half-cycle (a several-kHz carrier at 44.1kHz),
+   a single half-cycle's length is too jittery (real tape wow-and-flutter,
+   plus the coarse sample-to-carrier ratio) to reliably tell two nearby
+   tones apart on its own, so classification is smoothed while timing
+   isn't. Returns FALSE to abort the scan. */
+typedef int (*WAV_HalfCycleFn)(void *ctx, long run_samples, long smoothed_samples);
 
 /* Runs the amplitude Schmitt-trigger comparator over the whole PCM data
    and calls FN once per half-cycle. This is the shared core of both the
@@ -299,6 +306,7 @@ static int WAV_ScanHalfCycles(FILE *f, int channels, int bytes_per_sample, int f
 	int state = 0;
 	long run_samples = 0;
 	long frames_left;
+	long smooth_a = -1, smooth_b = -1; /* previous two half-cycle lengths, or -1 if not seen yet */
 
 	if (fseek(f, data_offset, SEEK_SET) != 0)
 		return FALSE;
@@ -317,8 +325,13 @@ static int WAV_ScanHalfCycles(FILE *f, int channels, int bytes_per_sample, int f
 			else if (state == 1 && v < lo_thresh)
 				new_state = 0;
 			if (new_state != state) {
-				if (!fn(ctx, run_samples))
+				long smoothed = smooth_a < 0 ? run_samples
+				              : smooth_b < 0 ? (smooth_a + run_samples) / 2
+				              : (smooth_a + smooth_b + run_samples) / 3;
+				if (!fn(ctx, run_samples, smoothed))
 					return FALSE;
+				smooth_a = smooth_b;
+				smooth_b = run_samples;
 				run_samples = 0;
 				state = new_state;
 			}
@@ -326,8 +339,13 @@ static int WAV_ScanHalfCycles(FILE *f, int channels, int bytes_per_sample, int f
 		}
 		frames_left -= got;
 	}
-	if (run_samples > 0 && !fn(ctx, run_samples))
-		return FALSE;
+	if (run_samples > 0) {
+		long smoothed = smooth_a < 0 ? run_samples
+		              : smooth_b < 0 ? (smooth_a + run_samples) / 2
+		              : (smooth_a + smooth_b + run_samples) / 3;
+		if (!fn(ctx, run_samples, smoothed))
+			return FALSE;
+	}
 	return TRUE;
 }
 
@@ -341,10 +359,11 @@ typedef struct {
 	unsigned long hist[WAV_HIST_SIZE];
 } WAV_HistCtx;
 
-static int WAV_HistCollect(void *ctx_, long run_samples)
+static int WAV_HistCollect(void *ctx_, long run_samples, long smoothed_samples)
 {
 	WAV_HistCtx *ctx = (WAV_HistCtx *) ctx_;
-	long idx = run_samples < 0 ? 0 : run_samples;
+	long idx = smoothed_samples < 0 ? 0 : smoothed_samples;
+	(void) run_samples;
 	if (idx >= WAV_HIST_SIZE)
 		idx = WAV_HIST_SIZE - 1;
 	ctx->hist[idx]++;
@@ -356,44 +375,47 @@ static int WAV_HistCollect(void *ctx_, long run_samples)
    a clean signal that only changes level at bit boundaries, not one
    transition per carrier half-cycle. WAV_ScanHalfCycles() above gives us
    the raw carrier's half-cycle lengths (in samples) - this splits them
-   into the two tone-frequency clusters (a classic 2-means/Otsu-style split
-   on the length histogram: converge a boundary so everything shorter than
-   it - the higher-frequency tone - is one cluster, everything at or above
-   it is the other), so the caller can classify and merge runs into a
-   demodulated squarewave. Returns the boundary length. */
+   into the two tone-frequency clusters via Otsu's method: try every
+   possible boundary t (everything shorter than t - the higher-frequency
+   tone - in one cluster, everything at or beyond it in the other) and
+   keep the one that maximizes the variance *between* the two clusters'
+   means, weighted by their populations. That's a globally optimal split
+   for this histogram (unlike a naively-initialized iterative 2-means,
+   which can converge on a lopsided local optimum when, as here, the two
+   populations are close together and roughly balanced). Returns the
+   boundary length. */
 static long WAV_HistThreshold(const unsigned long *hist)
 {
-	long threshold, i;
-	double total = 0, sum = 0;
+	double total_count = 0, total_sum = 0;
+	double count_below = 0, sum_below = 0;
+	double best_variance = -1;
+	long i, best_t = 1;
 
 	for (i = 0; i < WAV_HIST_SIZE; i++) {
-		total += hist[i];
-		sum += (double) i * hist[i];
+		total_count += hist[i];
+		total_sum += (double) i * hist[i];
 	}
-	if (total == 0)
+	if (total_count == 0)
 		return 1;
-	threshold = (long) (sum / total + 0.5);
-	for (i = 0; i < 16; i++) {
-		double sumA = 0, countA = 0, sumB = 0, countB = 0;
-		long j, new_threshold;
-		for (j = 0; j < WAV_HIST_SIZE; j++) {
-			if (j < threshold) {
-				sumA += (double) j * hist[j];
-				countA += hist[j];
-			}
-			else {
-				sumB += (double) j * hist[j];
-				countB += hist[j];
-			}
+
+	for (i = 1; i < WAV_HIST_SIZE; i++) {
+		double count_above, sum_above, mean_below, mean_above, diff, variance;
+		count_below += hist[i - 1];
+		sum_below += (double) (i - 1) * hist[i - 1];
+		count_above = total_count - count_below;
+		if (count_below == 0 || count_above == 0)
+			continue;
+		sum_above = total_sum - sum_below;
+		mean_below = sum_below / count_below;
+		mean_above = sum_above / count_above;
+		diff = mean_above - mean_below;
+		variance = count_below * count_above * diff * diff;
+		if (variance > best_variance) {
+			best_variance = variance;
+			best_t = i;
 		}
-		if (countA == 0 || countB == 0)
-			break;
-		new_threshold = (long) ((sumA / countA + sumB / countB) / 2.0 + 0.5);
-		if (new_threshold == threshold)
-			break;
-		threshold = new_threshold;
 	}
-	return threshold < 1 ? 1 : threshold;
+	return best_t;
 }
 
 typedef struct {
@@ -410,10 +432,10 @@ typedef struct {
    This is the demodulation step: it turns many carrier half-cycles of the
    same tone into the single bit-aligned pulse a real demodulator would
    have produced. */
-static int WAV_EmitClassified(void *ctx_, long run_samples)
+static int WAV_EmitClassified(void *ctx_, long run_samples, long smoothed_samples)
 {
 	WAV_EmitCtx *ctx = (WAV_EmitCtx *) ctx_;
-	int tone = run_samples < ctx->threshold ? 0 : 1;
+	int tone = smoothed_samples < ctx->threshold ? 0 : 1;
 
 	if (ctx->tone == -1) {
 		ctx->tone = tone;
