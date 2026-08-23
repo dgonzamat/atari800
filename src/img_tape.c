@@ -355,21 +355,6 @@ static int WAV_ScanHalfCycles(FILE *f, int channels, int bytes_per_sample, int f
    the histogram is trying to separate. */
 enum { WAV_HIST_SIZE = 256 };
 
-typedef struct {
-	unsigned long hist[WAV_HIST_SIZE];
-} WAV_HistCtx;
-
-static int WAV_HistCollect(void *ctx_, long run_samples, long smoothed_samples)
-{
-	WAV_HistCtx *ctx = (WAV_HistCtx *) ctx_;
-	long idx = smoothed_samples < 0 ? 0 : smoothed_samples;
-	(void) run_samples;
-	if (idx >= WAV_HIST_SIZE)
-		idx = WAV_HIST_SIZE - 1;
-	ctx->hist[idx]++;
-	return TRUE;
-}
-
 /* A real cassette player demodulates its two-tone FSK carrier in hardware
    before POKEY ever sees it: what the OS's tape-reading routine expects is
    a clean signal that only changes level at bit boundaries, not one
@@ -418,31 +403,59 @@ static long WAV_HistThreshold(const unsigned long *hist)
 	return best_t;
 }
 
+/* Half-cycles kept in the sliding calibration window (see WAV_EmitCtx
+   below): wide enough to give WAV_HistThreshold() a statistically stable
+   split, narrow enough to track real changes in the recording's character
+   (e.g. a standard-speed leader tone giving way to turbo-speed data) -
+   roughly 0.3-0.6s of audio at typical tape carrier rates. */
+enum { WAV_WINDOW_SIZE = 4000 };
+
+/* How often (in half-cycles) to recompute the threshold from the window.
+   An Otsu search over WAV_HIST_SIZE buckets is cheap, so this is just to
+   avoid redoing it on literally every single half-cycle. */
+enum { WAV_RECALIBRATE_EVERY = 64 };
+
 typedef struct {
 	WAV_ChunkWriter *writer;
 	int sample_rate;
 	long threshold;
 	int tone; /* -1 = none merged yet, 0 = short (high-frequency) tone, 1 = long (low-frequency) tone */
 	long merged_samples;
+	/* Sliding-window calibration state: HIST is the histogram of the last
+	   (up to) WAV_WINDOW_SIZE smoothed half-cycle lengths in WINDOW (a
+	   circular buffer); THRESHOLD is refreshed from it periodically. Real
+	   tape recordings drift in character over their length - a single
+	   recording can carry a standard-speed leader/header followed by a
+	   turbo-speed payload with different tone characteristics - so a
+	   single whole-file threshold (this file's very first approach) either
+	   fits the (usually much larger) payload and misclassifies the leader,
+	   or vice versa. Recalibrating from a trailing window instead tracks
+	   that drift, the way a real FSK demodulator's timing/level recovery
+	   does. */
+	unsigned long hist[WAV_HIST_SIZE];
+	long window[WAV_WINDOW_SIZE];
+	int window_count;
+	int window_pos;
+	int since_recalibrate;
 } WAV_EmitCtx;
 
-/* Classifies each half-cycle against the calibrated threshold and merges
-   consecutive same-tone runs, only calling WAV_EmitRun() - i.e. only
-   emitting an output pulse - when the classified tone actually changes.
-   This is the demodulation step: it turns many carrier half-cycles of the
-   same tone into the single bit-aligned pulse a real demodulator would
-   have produced. */
+/* Classifies each half-cycle against the (adaptively calibrated) threshold
+   and merges consecutive same-tone runs, only calling WAV_EmitRun() - i.e.
+   only emitting an output pulse - when the classified tone actually
+   changes. This is the demodulation step: it turns many carrier
+   half-cycles of the same tone into the single bit-aligned pulse a real
+   demodulator would have produced. */
 static int WAV_EmitClassified(void *ctx_, long run_samples, long smoothed_samples)
 {
 	WAV_EmitCtx *ctx = (WAV_EmitCtx *) ctx_;
 	int tone = smoothed_samples < ctx->threshold ? 0 : 1;
+	long idx;
 
 	if (ctx->tone == -1) {
 		ctx->tone = tone;
 		ctx->merged_samples = run_samples;
-		return TRUE;
 	}
-	if (tone != ctx->tone) {
+	else if (tone != ctx->tone) {
 		if (!WAV_EmitRun(ctx->writer, ctx->merged_samples, ctx->sample_rate))
 			return FALSE;
 		ctx->tone = tone;
@@ -450,16 +463,33 @@ static int WAV_EmitClassified(void *ctx_, long run_samples, long smoothed_sample
 	}
 	else
 		ctx->merged_samples += run_samples;
+
+	/* Feed this half-cycle into the trailing calibration window, evicting
+	   the oldest entry once it's full. */
+	idx = smoothed_samples < 0 ? 0 : smoothed_samples;
+	if (idx >= WAV_HIST_SIZE)
+		idx = WAV_HIST_SIZE - 1;
+	if (ctx->window_count == WAV_WINDOW_SIZE)
+		ctx->hist[ctx->window[ctx->window_pos]]--;
+	else
+		ctx->window_count++;
+	ctx->window[ctx->window_pos] = idx;
+	ctx->hist[idx]++;
+	ctx->window_pos = (ctx->window_pos + 1) % WAV_WINDOW_SIZE;
+
+	if (++ctx->since_recalibrate >= WAV_RECALIBRATE_EVERY) {
+		ctx->since_recalibrate = 0;
+		ctx->threshold = WAV_HistThreshold(ctx->hist);
+	}
 	return TRUE;
 }
 
 /* Converts the PCM data at DATA_OFFSET/DATA_SIZE in F into a synthetic CAS
    byte stream (FUJI header + one or more "wavp" chunks), written to OUT.
-   Three passes over the audio: one to find the peak amplitude (needed to
-   size the comparator's hysteresis band), one to calibrate the tone
-   frequencies actually present in this recording (see WAV_HistThreshold()),
-   and one to demodulate the carrier into pulses using that calibration
-   (see WAV_EmitClassified()). */
+   Two passes over the audio: one to find the peak amplitude (needed to
+   size the comparator's hysteresis band), one to demodulate the carrier
+   into pulses, adaptively calibrating the tone-frequency threshold as it
+   goes (see WAV_EmitClassified()). */
 static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per_sample,
                              long data_offset, long data_size, FILE *out)
 {
@@ -472,16 +502,20 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 	long frames_left;
 	WAV_ChunkWriter writer;
 	CAS_Header header;
-	WAV_HistCtx hist_ctx;
-	WAV_EmitCtx emit_ctx;
+	WAV_EmitCtx *emit_ctx;
+	int ok;
 
 	if (num_frames <= 0 || frame_size <= 0)
 		return FALSE;
 	block = (UBYTE *) Util_malloc(WAV_READ_FRAMES * frame_size);
+	/* WAV_EmitCtx holds a several-KB sliding window - heap-allocate it
+	   rather than risk a large stack frame in constrained environments. */
+	emit_ctx = (WAV_EmitCtx *) Util_malloc(sizeof(WAV_EmitCtx));
 
 	/* Pass 1: peak amplitude. */
 	if (fseek(f, data_offset, SEEK_SET) != 0) {
 		free(block);
+		free(emit_ctx);
 		return FALSE;
 	}
 	frames_left = num_frames;
@@ -513,33 +547,32 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 	hi_thresh = (int) (peak * WAV_HYSTERESIS_PERCENT / 100);
 	lo_thresh = -hi_thresh;
 
-	/* Pass 2: histogram the carrier's half-cycle lengths, then calibrate a
-	   frequency threshold that separates this recording's two tones. */
-	memset(&hist_ctx, 0, sizeof(hist_ctx));
-	if (!WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
-	                         block, hi_thresh, lo_thresh, WAV_HistCollect, &hist_ctx))
-		goto fail;
-
-	/* Pass 3: demodulate - classify each half-cycle against the calibrated
-	   threshold and emit one pulse per merged same-tone run. */
+	/* Pass 2: demodulate - classify each half-cycle against an adaptively
+	   calibrated threshold (see WAV_EmitClassified()) and emit one pulse
+	   per merged same-tone run. The threshold starts low (biasing early,
+	   still-uncalibrated samples to the "long" tone) and self-corrects
+	   within the first few dozen half-cycles. */
 	WAV_ChunkWriterInit(&writer, out);
-	emit_ctx.writer = &writer;
-	emit_ctx.sample_rate = sample_rate;
-	emit_ctx.threshold = WAV_HistThreshold(hist_ctx.hist);
-	emit_ctx.tone = -1;
-	emit_ctx.merged_samples = 0;
-	if (!WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
-	                         block, hi_thresh, lo_thresh, WAV_EmitClassified, &emit_ctx))
-		goto fail;
-	if (emit_ctx.tone != -1 && !WAV_EmitRun(&writer, emit_ctx.merged_samples, sample_rate))
-		goto fail;
-	if (!WAV_ChunkWriterFlush(&writer))
+	memset(emit_ctx, 0, sizeof(*emit_ctx));
+	emit_ctx->writer = &writer;
+	emit_ctx->sample_rate = sample_rate;
+	emit_ctx->threshold = 1;
+	emit_ctx->tone = -1;
+	ok = WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
+	                         block, hi_thresh, lo_thresh, WAV_EmitClassified, emit_ctx);
+	if (ok && emit_ctx->tone != -1)
+		ok = WAV_EmitRun(&writer, emit_ctx->merged_samples, sample_rate);
+	if (ok)
+		ok = WAV_ChunkWriterFlush(&writer);
+	if (!ok)
 		goto fail;
 
 	free(block);
+	free(emit_ctx);
 	return TRUE;
 fail:
 	free(block);
+	free(emit_ctx);
 	return FALSE;
 }
 
