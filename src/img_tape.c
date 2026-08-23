@@ -403,7 +403,7 @@ static long WAV_HistThreshold(const unsigned long *hist)
 	return best_t;
 }
 
-/* Half-cycles kept in the sliding calibration window (see WAV_EmitCtx
+/* Half-cycles kept in the sliding calibration window (see WAV_ClassifyCtx
    below): wide enough to give WAV_HistThreshold() a statistically stable
    split, narrow enough to track real changes in the recording's character
    (e.g. a standard-speed leader tone giving way to turbo-speed data) -
@@ -415,9 +415,14 @@ enum { WAV_WINDOW_SIZE = 4000 };
    avoid redoing it on literally every single half-cycle. */
 enum { WAV_RECALIBRATE_EVERY = 64 };
 
+/* Called once per merged same-tone run (see WAV_Classify() below), with
+   its logical level (1 = MARK/high-frequency tone, 0 = SPACE/low-frequency
+   tone) and duration in samples. Returns FALSE to abort. */
+typedef int (*WAV_ToneRunFn)(void *ctx, int level, long duration_samples);
+
 typedef struct {
-	WAV_ChunkWriter *writer;
-	int sample_rate;
+	WAV_ToneRunFn on_run;
+	void *on_run_ctx;
 	long threshold;
 	int tone; /* -1 = none merged yet, 0 = short (high-frequency) tone, 1 = long (low-frequency) tone */
 	long merged_samples;
@@ -437,17 +442,16 @@ typedef struct {
 	int window_count;
 	int window_pos;
 	int since_recalibrate;
-} WAV_EmitCtx;
+} WAV_ClassifyCtx;
 
 /* Classifies each half-cycle against the (adaptively calibrated) threshold
-   and merges consecutive same-tone runs, only calling WAV_EmitRun() - i.e.
-   only emitting an output pulse - when the classified tone actually
-   changes. This is the demodulation step: it turns many carrier
-   half-cycles of the same tone into the single bit-aligned pulse a real
-   demodulator would have produced. */
-static int WAV_EmitClassified(void *ctx_, long run_samples, long smoothed_samples)
+   and merges consecutive same-tone runs, calling ON_RUN() - once per
+   merged run, not per half-cycle. This is the demodulation step: it turns
+   many carrier half-cycles of the same tone into the single bit-aligned
+   level change a real demodulator would have produced. */
+static int WAV_Classify(void *ctx_, long run_samples, long smoothed_samples)
 {
-	WAV_EmitCtx *ctx = (WAV_EmitCtx *) ctx_;
+	WAV_ClassifyCtx *ctx = (WAV_ClassifyCtx *) ctx_;
 	int tone = smoothed_samples < ctx->threshold ? 0 : 1;
 	long idx;
 
@@ -456,7 +460,9 @@ static int WAV_EmitClassified(void *ctx_, long run_samples, long smoothed_sample
 		ctx->merged_samples = run_samples;
 	}
 	else if (tone != ctx->tone) {
-		if (!WAV_EmitRun(ctx->writer, ctx->merged_samples, ctx->sample_rate))
+		/* tone 0 (short half-cycle/high-frequency) is the MARK convention
+		   (logical 1); tone 1 (long/low-frequency) is SPACE (logical 0). */
+		if (!ctx->on_run(ctx->on_run_ctx, ctx->tone == 0 ? 1 : 0, ctx->merged_samples))
 			return FALSE;
 		ctx->tone = tone;
 		ctx->merged_samples = run_samples;
@@ -484,12 +490,236 @@ static int WAV_EmitClassified(void *ctx_, long run_samples, long smoothed_sample
 	return TRUE;
 }
 
+/* --- Bootstrap byte decode ----------------------------------------------
+   The OS's own byte-receive interrupt (see cassette.c's CassetteRead(),
+   which only signals a loaded byte - and so only fires the interrupt that
+   delivers it to the running program - for events where IMG_TAPE_Read()
+   reports is_gap==FALSE) never fires for "wavp"/"fsk " blocks: those
+   always report is_gap=TRUE, by design, since they represent continuous
+   signal meant to be read via a custom loader's own direct POKEY_SKSTAT
+   polling (exactly how the game's own turbo routine reads it, once it has
+   taken over) - not the OS's interrupt-driven byte assembly. That means a
+   WAV recording's initial standard-speed bootstrap segment, if the whole
+   file is emitted as one continuous "wavp" signal, can never be read by
+   the stock OS, no matter how faithfully that segment's signal is
+   reproduced: the interrupt that would ever deliver a byte from it simply
+   never fires.
+
+   So before falling back to "wavp", this looks for a run of standard
+   600-baud-framed bytes at the start of the recording (10 bits/byte:
+   start=0, 8 data bits LSB-first, stop=1 - the same convention the
+   existing non-fsk IMG_TAPE_SerinStatus() branch already uses), decoded
+   directly from the merged tone-level runs via a simple bit-center
+   sampler, and emits them as a genuine "data" chunk the stock reader can
+   consume the normal way. Decoding stops at the first framing error (a
+   bad start or stop bit) - taken as the point where turbo-speed data
+   begins - and the rest of the file continues as "wavp" from there. */
+
+typedef struct {
+	int level;     /* 1 = MARK, 0 = SPACE */
+	long duration; /* run length, in samples */
+} WAV_ToneRun;
+
+typedef struct {
+	WAV_ToneRun *runs;
+	long count;
+	long capacity;
+} WAV_CollectCtx;
+
+static int WAV_CollectRun(void *ctx_, int level, long duration_samples)
+{
+	WAV_CollectCtx *ctx = (WAV_CollectCtx *) ctx_;
+	if (ctx->count == ctx->capacity) {
+		long new_cap = ctx->capacity ? ctx->capacity * 2 : 4096;
+		ctx->runs = (WAV_ToneRun *) Util_realloc(ctx->runs, new_cap * sizeof(WAV_ToneRun));
+		ctx->capacity = new_cap;
+	}
+	ctx->runs[ctx->count].level = level;
+	ctx->runs[ctx->count].duration = duration_samples;
+	ctx->count++;
+	return TRUE;
+}
+
+/* A position within the collected run array: RUN_IDX identifies the run,
+   OFFSET is how many samples into it. Advances strictly forward. */
+typedef struct {
+	long run_idx;
+	long offset;
+} WAV_Cursor;
+
+/* Moves CUR forward by NUM_SAMPLES and returns the level at the new
+   position, or -1 if that runs past the end of the collected runs. */
+static int WAV_CursorAdvance(const WAV_ToneRun *runs, long count, WAV_Cursor *cur, long num_samples)
+{
+	cur->offset += num_samples;
+	while (cur->run_idx < count && cur->offset >= runs[cur->run_idx].duration) {
+		cur->offset -= runs[cur->run_idx].duration;
+		cur->run_idx++;
+	}
+	if (cur->run_idx >= count)
+		return -1;
+	return runs[cur->run_idx].level;
+}
+
+/* Attempts to decode one UART byte with CUR positioned at what should be
+   the very start of its start bit. On success returns the byte (0-255)
+   and leaves *cur at the start of the next byte's potential start bit; on
+   a framing error returns -1 and leaves *cur unspecified. */
+static int WAV_TryDecodeByte(const WAV_ToneRun *runs, long count, WAV_Cursor *cur, double bit_samples)
+{
+	WAV_Cursor c = *cur;
+	long step = (long) (bit_samples + 0.5);
+	long half = step / 2;
+	int byte = 0, bit, level;
+
+	level = WAV_CursorAdvance(runs, count, &c, half); /* center of the start bit */
+	if (level != 0)
+		return -1;
+	for (bit = 0; bit < 8; bit++) {
+		level = WAV_CursorAdvance(runs, count, &c, step); /* center of the next data bit */
+		if (level < 0)
+			return -1;
+		if (level)
+			byte |= 1 << bit;
+	}
+	level = WAV_CursorAdvance(runs, count, &c, step); /* center of the stop bit */
+	if (level != 1)
+		return -1;
+	WAV_CursorAdvance(runs, count, &c, step - half); /* end of the stop bit */
+	*cur = c;
+	return byte;
+}
+
+/* Fewest decoded bytes required before accepting a candidate start-bit
+   position - guards against a short lucky coincidence in noise/turbo data
+   being mistaken for the start of a real standard-speed record. Combined
+   with the sync-byte check below (a real Atari tape record always starts
+   with two $55 sync bytes, written by the OS's own CSAVE routine), this
+   makes a false accept very unlikely. */
+enum { WAV_MIN_BOOTSTRAP_BYTES = 8 };
+
+/* Longest bootstrap this will decode. Real boot loaders are typically a
+   few hundred bytes; this is a generous ceiling, not a tuned expectation. */
+enum { WAV_MAX_BOOTSTRAP_BYTES = 4096 };
+
+/* How many candidate start-bit positions (successive runs) to try before
+   concluding there's no standard-speed bootstrap at all. Used for the very
+   first search (from the start of the file, where the leader tone before
+   the bootstrap can legitimately be several seconds long). */
+enum { WAV_MAX_START_CANDIDATES = 8000 };
+
+/* Same, but for searching right after an already-decoded segment for a
+   FOLLOWING one (real boot loaders are often more than one standard-speed
+   record). Deliberately much smaller: a genuine next record starts within
+   a short inter-record gap, so a small budget finds it fast, while keeping
+   the search from wandering deep into what is actually turbo-speed data
+   and mistaking a coincidental short match there for a real record. */
+enum { WAV_BOOTSTRAP_CONTINUATION_CANDIDATES = 1500 };
+
+/* Upper bound on how many standard-speed segments WAV_ConvertToCAS() will
+   chain together, purely as a safety net against pathological input. */
+enum { WAV_MAX_BOOTSTRAP_SEGMENTS = 64 };
+
+/* A "standard-speed" bootstrap isn't necessarily literally 600 baud - real
+   tape decks and turbo-loader bootstraps commonly run a bit off that (this
+   file's own tests found one at ~802 baud) - so this tries a range of
+   candidate rates, not just DEFAULT_BAUDRATE, and keeps whichever one
+   decodes the longest valid (sync-prefixed) run. Bounds are generous
+   enough to cover plausible "mildly accelerated leader" rates without
+   reaching into genuine turbo territory (where this whole approach
+   doesn't apply - see the big comment above). */
+enum { WAV_BOOTSTRAP_MIN_BAUD_X10 = 5500 };  /* 550.0 baud */
+enum { WAV_BOOTSTRAP_MAX_BAUD_X10 = 9000 };  /* 900.0 baud */
+enum { WAV_BOOTSTRAP_BAUD_STEP_X10 = 20 };   /*   2.0 baud */
+
+/* Stop the baud sweep early once a candidate decodes at least this many
+   bytes - already far too long to be a coincidence, and refining the rate
+   further isn't worth the extra search time. */
+enum { WAV_BOOTSTRAP_GOOD_ENOUGH_BYTES = 32 };
+
+/* Searches RUNS[START_RUN_IDX..COUNT) across a range of candidate baud
+   rates for the start of a standard-speed byte stream, and decodes as many
+   contiguous bytes as keep validating. Tries at most MAX_TRIES candidate
+   start-bit positions per baud rate. Sets *OUT_BYTES/*OUT_NUM_BYTES to a
+   malloc'd buffer (caller frees), *OUT_BAUD to the winning rate, and
+   *OUT_BOUNDARY to the position right after the last decoded byte - or
+   *out_num_bytes to 0 (*OUT_BYTES NULL, *OUT_BOUNDARY zeroed) if no
+   bootstrap was found at any candidate rate. Also sets *OUT_LEAD_SAMPLES to
+   the sample count skipped before the accepted start bit (the leader/gap
+   preceding it, measured from START_RUN_IDX). */
+static void WAV_DecodeBootstrap(const WAV_ToneRun *runs, long count, long start_run_idx,
+                                 long max_tries, int sample_rate,
+                                 UBYTE **out_bytes, long *out_num_bytes, int *out_baud,
+                                 WAV_Cursor *out_boundary, long *out_lead_samples)
+{
+	long baud_x10;
+	UBYTE *best_bytes = NULL;
+	long best_num_bytes = 0, best_lead_samples = 0;
+	int best_baud = 0;
+	WAV_Cursor best_boundary;
+
+	best_boundary.run_idx = start_run_idx;
+	best_boundary.offset = 0;
+
+	for (baud_x10 = WAV_BOOTSTRAP_MIN_BAUD_X10; baud_x10 <= WAV_BOOTSTRAP_MAX_BAUD_X10;
+	     baud_x10 += WAV_BOOTSTRAP_BAUD_STEP_X10) {
+		double bit_samples = (double) sample_rate * 10.0 / baud_x10;
+		WAV_Cursor search;
+		long lead_samples = 0;
+		long tries;
+
+		search.run_idx = start_run_idx;
+		search.offset = 0;
+		for (tries = 0; tries < max_tries && search.run_idx < count; tries++) {
+			if (runs[search.run_idx].level == 0) {
+				WAV_Cursor cur = search;
+				UBYTE *bytes = NULL;
+				long n = 0, cap = 0;
+				for (;;) {
+					int b = WAV_TryDecodeByte(runs, count, &cur, bit_samples);
+					if (b < 0)
+						break;
+					if (n == cap) {
+						cap = cap ? cap * 2 : 256;
+						bytes = (UBYTE *) Util_realloc(bytes, cap);
+					}
+					bytes[n++] = (UBYTE) b;
+					if (n >= WAV_MAX_BOOTSTRAP_BYTES)
+						break;
+				}
+				if (n >= WAV_MIN_BOOTSTRAP_BYTES && bytes[0] == 0x55 && bytes[1] == 0x55) {
+					if (n > best_num_bytes) {
+						free(best_bytes);
+						best_bytes = bytes;
+						best_num_bytes = n;
+						best_baud = (int) (baud_x10 / 10);
+						best_boundary = cur;
+						best_lead_samples = lead_samples;
+						bytes = NULL;
+					}
+					if (best_num_bytes >= WAV_BOOTSTRAP_GOOD_ENOUGH_BYTES) {
+						free(bytes);
+						goto done;
+					}
+				}
+				free(bytes);
+			}
+			lead_samples += runs[search.run_idx].duration;
+			search.run_idx++;
+		}
+	}
+done:
+	*out_bytes = best_bytes;
+	*out_num_bytes = best_num_bytes;
+	*out_baud = best_baud;
+	*out_boundary = best_boundary;
+	*out_lead_samples = best_lead_samples;
+}
+
 /* Converts the PCM data at DATA_OFFSET/DATA_SIZE in F into a synthetic CAS
-   byte stream (FUJI header + one or more "wavp" chunks), written to OUT.
-   Two passes over the audio: one to find the peak amplitude (needed to
-   size the comparator's hysteresis band), one to demodulate the carrier
-   into pulses, adaptively calibrating the tone-frequency threshold as it
-   goes (see WAV_EmitClassified()). */
+   byte stream (FUJI header, an optional leading "data" chunk decoded from
+   a standard-speed bootstrap - see WAV_DecodeBootstrap() - and one or more
+   "wavp" chunks for the remaining turbo-speed signal), written to OUT. */
 static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per_sample,
                              long data_offset, long data_size, FILE *out)
 {
@@ -502,40 +732,70 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 	long frames_left;
 	WAV_ChunkWriter writer;
 	CAS_Header header;
-	WAV_EmitCtx *emit_ctx;
+	WAV_ClassifyCtx *classify_ctx;
+	WAV_CollectCtx collect_ctx;
+	UBYTE *bootstrap_bytes;
+	long bootstrap_num_bytes, bootstrap_lead_samples;
+	int bootstrap_baud;
+	WAV_Cursor boundary;
 	int ok;
+	long i;
 
 	if (num_frames <= 0 || frame_size <= 0)
 		return FALSE;
 	block = (UBYTE *) Util_malloc(WAV_READ_FRAMES * frame_size);
-	/* WAV_EmitCtx holds a several-KB sliding window - heap-allocate it
+	/* WAV_ClassifyCtx holds a several-KB sliding window - heap-allocate it
 	   rather than risk a large stack frame in constrained environments. */
-	emit_ctx = (WAV_EmitCtx *) Util_malloc(sizeof(WAV_EmitCtx));
+	classify_ctx = (WAV_ClassifyCtx *) Util_malloc(sizeof(WAV_ClassifyCtx));
 
 	/* Pass 1: peak amplitude. */
 	if (fseek(f, data_offset, SEEK_SET) != 0) {
 		free(block);
-		free(emit_ctx);
+		free(classify_ctx);
 		return FALSE;
 	}
 	frames_left = num_frames;
 	while (frames_left > 0) {
 		long want = frames_left > WAV_READ_FRAMES ? WAV_READ_FRAMES : frames_left;
 		long got = (long) fread(block, frame_size, want, f);
-		long i;
+		long j;
 		if (got <= 0)
 			break;
-		for (i = 0; i < got; i++) {
-			long v = WAV_DownmixFrame(block + i * frame_size, channels, bytes_per_sample);
+		for (j = 0; j < got; j++) {
+			long v = WAV_DownmixFrame(block + j * frame_size, channels, bytes_per_sample);
 			long a = v < 0 ? -v : v;
 			if (a > peak)
 				peak = a;
 		}
 		frames_left -= got;
 	}
+	hi_thresh = (int) (peak * WAV_HYSTERESIS_PERCENT / 100);
+	lo_thresh = -hi_thresh;
 
-	/* Header: FUJI marker (empty description) + baud (unused by wavp, but
-	   every CAS file conventionally has one). */
+	/* Pass 2: demodulate the whole file - classify each half-cycle against
+	   an adaptively calibrated threshold (see WAV_Classify()) and collect
+	   one merged run per same-tone stretch. The threshold starts low
+	   (biasing early, still-uncalibrated samples to the "long" tone) and
+	   self-corrects within the first few dozen half-cycles. */
+	memset(classify_ctx, 0, sizeof(*classify_ctx));
+	memset(&collect_ctx, 0, sizeof(collect_ctx));
+	classify_ctx->on_run = WAV_CollectRun;
+	classify_ctx->on_run_ctx = &collect_ctx;
+	classify_ctx->threshold = 1;
+	classify_ctx->tone = -1;
+	ok = WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
+	                         block, hi_thresh, lo_thresh, WAV_Classify, classify_ctx);
+	if (ok && classify_ctx->tone != -1)
+		ok = WAV_CollectRun(&collect_ctx, classify_ctx->tone == 0 ? 1 : 0, classify_ctx->merged_samples);
+	free(block);
+	free(classify_ctx);
+	if (!ok) {
+		free(collect_ctx.runs);
+		return FALSE;
+	}
+
+	/* Header: FUJI marker (empty description) + baud (matches the
+	   bootstrap "data" chunk, if any; unused by "wavp"). */
 	memset(&header, 0, sizeof(header));
 	if (fwrite("FUJI", 1, 4, out) != 4 || fwrite(&header.length_lo, 1, 4, out) != 4)
 		goto fail;
@@ -544,35 +804,113 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 	if (fwrite("baud", 1, 4, out) != 4 || fwrite(&header.length_lo, 1, 4, out) != 4)
 		goto fail;
 
-	hi_thresh = (int) (peak * WAV_HYSTERESIS_PERCENT / 100);
-	lo_thresh = -hi_thresh;
+	/* Look for a standard-speed bootstrap at the very start and, if found,
+	   write it as a real "data" chunk (see the big comment above), at
+	   whatever baud rate it actually decoded at (a real recording's
+	   bootstrap segment isn't necessarily exactly DEFAULT_BAUDRATE). A
+	   real boot loader is very often more than one such record (e.g. a
+	   short boot header record followed by the loader code itself, each
+	   read via its own SIO call) - decoding only the first one leaves the
+	   OS's stock reader trying to read a second record's worth of bytes
+	   out of what would otherwise be raw "wavp" signal, which can never
+	   satisfy it (see the big comment above) and times out. So keep
+	   chasing further segments, immediately after each one just decoded,
+	   until either none is found (real turbo-speed data has begun), a
+	   standard Atari cassette EOF record (control byte $FE - see the
+	   raw-binary-format branch of ReadNextRecord() above, which writes
+	   this exact convention) is decoded - the OS's own boot reader stops
+	   issuing further SIO reads once it sees one, so searching past it
+	   would only risk a coincidental false match inside genuine
+	   turbo-speed data - or the safety cap is hit. */
+	boundary.run_idx = 0;
+	boundary.offset = 0;
+	{
+		int segment;
+		for (segment = 0; segment < WAV_MAX_BOOTSTRAP_SEGMENTS; segment++) {
+			long search_from = boundary.run_idx;
+			long max_tries = segment == 0 ? WAV_MAX_START_CANDIDATES
+			                               : WAV_BOOTSTRAP_CONTINUATION_CANDIDATES;
+			long lead_ms;
+			CAS_Header data_header;
+			int is_eof_record;
 
-	/* Pass 2: demodulate - classify each half-cycle against an adaptively
-	   calibrated threshold (see WAV_EmitClassified()) and emit one pulse
-	   per merged same-tone run. The threshold starts low (biasing early,
-	   still-uncalibrated samples to the "long" tone) and self-corrects
-	   within the first few dozen half-cycles. */
+			WAV_DecodeBootstrap(collect_ctx.runs, collect_ctx.count, search_from, max_tries,
+			                     sample_rate, &bootstrap_bytes, &bootstrap_num_bytes,
+			                     &bootstrap_baud, &boundary, &bootstrap_lead_samples);
+			if (bootstrap_num_bytes <= 0) {
+				boundary.run_idx = search_from;
+				boundary.offset = 0;
+				break;
+			}
+			is_eof_record = bootstrap_num_bytes >= 3 && bootstrap_bytes[2] == 0xfe;
+
+			lead_ms = bootstrap_lead_samples * 1000L / sample_rate;
+			if (lead_ms > 0xFFFF)
+				lead_ms = 0xFFFF;
+			memset(&data_header, 0, sizeof(data_header));
+			data_header.aux_lo = bootstrap_baud & 0xFF;
+			data_header.aux_hi = (bootstrap_baud >> 8) & 0xFF;
+			if (fwrite("baud", 1, 4, out) != 4 || fwrite(&data_header.length_lo, 1, 4, out) != 4) {
+				free(bootstrap_bytes);
+				goto fail;
+			}
+			memcpy(data_header.identifier, "data", 4);
+			data_header.length_lo = bootstrap_num_bytes & 0xFF;
+			data_header.length_hi = (bootstrap_num_bytes >> 8) & 0xFF;
+			data_header.aux_lo = lead_ms & 0xFF;
+			data_header.aux_hi = (lead_ms >> 8) & 0xFF;
+			if (fwrite(&data_header, 1, 8, out) != 8
+			    || fwrite(bootstrap_bytes, 1, bootstrap_num_bytes, out) != (size_t) bootstrap_num_bytes) {
+				free(bootstrap_bytes);
+				goto fail;
+			}
+			free(bootstrap_bytes);
+			bootstrap_bytes = NULL;
+			if (is_eof_record)
+				break;
+		}
+	}
+	/* Restore the default rate for anything after the last decoded record
+	   (moot for "wavp", which ignores it, but keeps block_baudrates[]
+	   consistent for any future reader/tooling that inspects it). Written
+	   even when no bootstrap segment was found at all, since it's cheap
+	   and harmless, and keeps this unconditional on the loop above. */
+	{
+		CAS_Header data_header;
+		memset(&data_header, 0, sizeof(data_header));
+		data_header.aux_lo = DEFAULT_BAUDRATE & 0xFF;
+		data_header.aux_hi = DEFAULT_BAUDRATE >> 8;
+		if (fwrite("baud", 1, 4, out) != 4 || fwrite(&data_header.length_lo, 1, 4, out) != 4)
+			goto fail;
+	}
+
+	/* Emit whatever's left (from the bootstrap decode's boundary, or from
+	   the very start if no bootstrap was found) as "wavp" pulses. Since
+	   "wavp"'s parity-based level convention assumes the first pulse of a
+	   chunk is always SPACE, and the true level here may be MARK, prime
+	   it with a 1-sample throwaway pulse when needed so parity lines up
+	   with the real signal from here on. */
 	WAV_ChunkWriterInit(&writer, out);
-	memset(emit_ctx, 0, sizeof(*emit_ctx));
-	emit_ctx->writer = &writer;
-	emit_ctx->sample_rate = sample_rate;
-	emit_ctx->threshold = 1;
-	emit_ctx->tone = -1;
-	ok = WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
-	                         block, hi_thresh, lo_thresh, WAV_EmitClassified, emit_ctx);
-	if (ok && emit_ctx->tone != -1)
-		ok = WAV_EmitRun(&writer, emit_ctx->merged_samples, sample_rate);
+	ok = TRUE;
+	if (boundary.run_idx < collect_ctx.count) {
+		int true_level = collect_ctx.runs[boundary.run_idx].level;
+		long remaining = collect_ctx.runs[boundary.run_idx].duration - boundary.offset;
+		if (true_level != 0)
+			ok = WAV_EmitRun(&writer, 1, sample_rate);
+		if (ok && remaining > 0)
+			ok = WAV_EmitRun(&writer, remaining, sample_rate);
+		for (i = boundary.run_idx + 1; ok && i < collect_ctx.count; i++)
+			ok = WAV_EmitRun(&writer, collect_ctx.runs[i].duration, sample_rate);
+	}
 	if (ok)
 		ok = WAV_ChunkWriterFlush(&writer);
 	if (!ok)
 		goto fail;
 
-	free(block);
-	free(emit_ctx);
+	free(collect_ctx.runs);
 	return TRUE;
 fail:
-	free(block);
-	free(emit_ctx);
+	free(collect_ctx.runs);
 	return FALSE;
 }
 
