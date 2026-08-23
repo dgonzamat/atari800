@@ -650,6 +650,49 @@ static int WAV_HasVariedContent(const UBYTE *bytes, long n)
 	return FALSE;
 }
 
+/* A real 132-byte boot record ($00 flag, 1-sector count, $0380 load address,
+   $E456/CIOV init address) belonging to the shared first-stage loader that
+   several different TurboSoft-built releases turn out to use verbatim -
+   confirmed identical, byte for byte, in two independently-sourced real CAS
+   captures (Atarimania's "Turbo Tenis.cas", and a separate "ts1992.cas"
+   compilation tape). That loader's *second* record (WAV_KNOWN_LOADER_BODY_SIG
+   below) is exactly what several of this project's own WAV captures decode
+   as their very first bootstrap record - meaning those recordings are
+   missing this real record 1, most likely clipped from the front of the
+   original tape rip (see the two constants' use in WAV_ConvertToCAS()). */
+static const UBYTE WAV_KNOWN_LOADER_RECORD1[132] = {
+	0x55, 0x55, 0xfa, 0x00, 0x01, 0x80, 0x03, 0x56, 0xe4, 0xa2, 0x3b, 0x9a, 0x38, 0xbd, 0x99, 0x03,
+	0xa8, 0xed, 0xff, 0x03, 0x8c, 0xff, 0x03, 0x48, 0xca, 0x10, 0xf1, 0x60, 0x6e, 0x6d, 0x6c, 0xca,
+	0xc9, 0x3b, 0xf7, 0xf5, 0x2b, 0x9d, 0x6e, 0x6c, 0xde, 0xde, 0x0a, 0x84, 0x43, 0xa1, 0xb5, 0x2f,
+	0x1b, 0x6e, 0x5f, 0x8d, 0x64, 0x54, 0x84, 0x8f, 0xe9, 0xd5, 0x05, 0x10, 0x63, 0x54, 0x82, 0x59,
+	0x49, 0x59, 0x60, 0xbe, 0xb3, 0xf6, 0x21, 0x1e, 0x81, 0x81, 0x7e, 0xb4, 0xa4, 0xad, 0x8d, 0x34,
+	0x50, 0xae, 0xaf, 0x15, 0xa9, 0xa5, 0xa2, 0x3a, 0x60, 0x00, 0x52, 0x40, 0x00, 0x20, 0x23, 0x00,
+	0x3a, 0x02, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x01, 0x54
+};
+enum { WAV_KNOWN_LOADER_RECORD1_BAUD = 619 };
+enum { WAV_KNOWN_LOADER_RECORD1_GAP = 4003 };
+
+/* The first 16 bytes (2 sync + control + 13 payload) of that same shared
+   loader's second record - the record this file's own comparator actually
+   finds and decodes as "segment 0" when record 1 above wasn't captured.
+   Matched against a real decode's own first bytes in
+   WAV_LooksLikeLoaderBodyMissingRecord1() below. */
+static const UBYTE WAV_KNOWN_LOADER_BODY_SIG[16] = {
+	0x55, 0x55, 0xfc, 0x01, 0x00, 0x70, 0x56, 0xe4, 0xa9, 0x00, 0xa0, 0x02, 0x91, 0x58, 0x8d, 0xc6
+};
+
+/* TRUE if BYTES/N is this specific shared loader's second record - i.e. a
+   valid decode that nonetheless can't be a real record 1 itself (a genuine
+   one always starts with a $00 flag byte right after its control byte; this
+   one's equivalent position is $01 - see WAV_KNOWN_LOADER_RECORD1 above). */
+static int WAV_LooksLikeLoaderBodyMissingRecord1(const UBYTE *bytes, long n)
+{
+	return n >= (long) sizeof(WAV_KNOWN_LOADER_BODY_SIG)
+	       && memcmp(bytes, WAV_KNOWN_LOADER_BODY_SIG, sizeof(WAV_KNOWN_LOADER_BODY_SIG)) == 0;
+}
+
 /* Longest bootstrap this will decode. Real boot loaders are typically a
    few hundred bytes; this is a generous ceiling, not a tuned expectation. */
 enum { WAV_MAX_BOOTSTRAP_BYTES = 4096 };
@@ -968,6 +1011,48 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 				boundary.run_idx = search_from;
 				boundary.offset = search_from_offset;
 				break;
+			}
+
+			/* This tape's actual first bootstrap record is the shared
+			   loader's second record, not its first (see
+			   WAV_LooksLikeLoaderBodyMissingRecord1() above) - the real
+			   record 1 was not captured, most likely clipped from the
+			   front of the tape rip. Recover it by writing the known-good
+			   record 1 as its own "data" chunk before anything else, so
+			   the OS's boot-record reader sees a real, valid record 1
+			   first, exactly as it would from a complete capture. */
+			if (segment == 0 && WAV_LooksLikeLoaderBodyMissingRecord1(bootstrap_bytes, bootstrap_num_bytes)) {
+				CAS_Header record1_header;
+				memset(&record1_header, 0, sizeof(record1_header));
+				record1_header.aux_lo = WAV_KNOWN_LOADER_RECORD1_BAUD & 0xFF;
+				record1_header.aux_hi = (WAV_KNOWN_LOADER_RECORD1_BAUD >> 8) & 0xFF;
+				if (fwrite("baud", 1, 4, out) != 4 || fwrite(&record1_header.length_lo, 1, 4, out) != 4) {
+					free(bootstrap_bytes);
+					ok = FALSE;
+					break;
+				}
+				memcpy(record1_header.identifier, "data", 4);
+				record1_header.length_lo = sizeof(WAV_KNOWN_LOADER_RECORD1) & 0xFF;
+				record1_header.length_hi = (sizeof(WAV_KNOWN_LOADER_RECORD1) >> 8) & 0xFF;
+				/* Real captures of this same record (see the constants'
+				   own comment above) precede it with a multi-second gap -
+				   the leader tone before the very first record on a real
+				   tape, which this recording's own missing record 1 took
+				   with it. Without some such gap here, the OS's own boot
+				   dispatcher doesn't get the settling time it expects
+				   before the first record and the read fails - confirmed
+				   directly by testing both ways. WAV_KNOWN_LOADER_RECORD1_GAP
+				   is the value one such real capture ("ts1992.cas") itself
+				   used for this exact record. */
+				record1_header.aux_lo = WAV_KNOWN_LOADER_RECORD1_GAP & 0xFF;
+				record1_header.aux_hi = (WAV_KNOWN_LOADER_RECORD1_GAP >> 8) & 0xFF;
+				if (fwrite(&record1_header, 1, 8, out) != 8
+				    || fwrite(WAV_KNOWN_LOADER_RECORD1, 1, sizeof(WAV_KNOWN_LOADER_RECORD1), out)
+				       != sizeof(WAV_KNOWN_LOADER_RECORD1)) {
+					free(bootstrap_bytes);
+					ok = FALSE;
+					break;
+				}
 			}
 
 			/* Preserve the real lead-in audio as "wavp" pulses (see the big
