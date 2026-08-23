@@ -619,7 +619,7 @@ static int WAV_ChecksumValid(const UBYTE *bytes, long n)
 	return sum == bytes[n - 1];
 }
 
-/* Rejects a candidate whose content bytes (everything between the 2 sync
+/* Flags a candidate whose content bytes (everything between the 2 sync
    bytes + control byte and the trailing checksum byte) are all identical -
    most commonly all zero. Tracing an actual boot found exactly this: a
    flat, silent stretch between two real records decoded as a spurious but
@@ -629,8 +629,15 @@ static int WAV_ChecksumValid(const UBYTE *bytes, long n)
    WAV_ChecksumValid() alone can't tell a genuine short all-zero record
    from a long flat/silent run that happens to produce the right control
    byte by chance. A real record's content is executable code or varied
-   data and essentially never uses a single repeated byte value throughout,
-   so this costs nothing against genuine records while closing that gap. */
+   data and essentially never uses a single repeated byte value throughout.
+   WAV_DecodeBootstrap() below only *prefers* a varied-content candidate
+   over one that fails this check, rather than rejecting the latter
+   outright - deprioritizing it is enough to stop it from short-circuiting
+   the search before a real record elsewhere gets a chance to be tried
+   (that's what actually happened - the all-zero stretch always sorted
+   first because any start position within it decodes equally "validly"),
+   while still allowing it as a last resort if nothing else in the search
+   range validates at all. */
 static int WAV_HasVariedContent(const UBYTE *bytes, long n)
 {
 	long i;
@@ -708,9 +715,22 @@ static void WAV_DecodeBootstrap(const WAV_ToneRun *runs, long count, long start_
 	long best_num_bytes = 0, best_lead_samples = 0, best_lead_run_idx = start_run_idx;
 	int best_baud = 0;
 	WAV_Cursor best_boundary;
+	/* A record with no varied content (see WAV_HasVariedContent()) is kept
+	   here instead, so it can't short-circuit the search (via the "good
+	   enough" exit below) before a shorter but varied-content candidate
+	   elsewhere gets a chance to be tried - but it's still used as a last
+	   resort if nothing else validates at all, since a genuine record with
+	   uniform content is possible in principle, just not preferred over a
+	   real one when both are on the table. */
+	UBYTE *fallback_bytes = NULL;
+	long fallback_num_bytes = 0, fallback_lead_samples = 0, fallback_lead_run_idx = start_run_idx;
+	int fallback_baud = 0;
+	WAV_Cursor fallback_boundary;
 
 	best_boundary.run_idx = start_run_idx;
 	best_boundary.offset = 0;
+	fallback_boundary.run_idx = start_run_idx;
+	fallback_boundary.offset = 0;
 
 	for (baud_x10 = WAV_BOOTSTRAP_MIN_BAUD_X10; baud_x10 <= WAV_BOOTSTRAP_MAX_BAUD_X10;
 	     baud_x10 += WAV_BOOTSTRAP_BAUD_STEP_X10) {
@@ -739,20 +759,32 @@ static void WAV_DecodeBootstrap(const WAV_ToneRun *runs, long count, long start_
 						break;
 				}
 				if (n >= WAV_MIN_BOOTSTRAP_BYTES && bytes[0] == 0x55 && bytes[1] == 0x55
-				    && WAV_ChecksumValid(bytes, n) && WAV_HasVariedContent(bytes, n)) {
-					if (n > best_num_bytes) {
-						free(best_bytes);
-						best_bytes = bytes;
-						best_num_bytes = n;
-						best_baud = (int) (baud_x10 / 10);
-						best_boundary = cur;
-						best_lead_samples = lead_samples;
-						best_lead_run_idx = search.run_idx;
-						bytes = NULL;
+				    && WAV_ChecksumValid(bytes, n)) {
+					if (WAV_HasVariedContent(bytes, n)) {
+						if (n > best_num_bytes) {
+							free(best_bytes);
+							best_bytes = bytes;
+							best_num_bytes = n;
+							best_baud = (int) (baud_x10 / 10);
+							best_boundary = cur;
+							best_lead_samples = lead_samples;
+							best_lead_run_idx = search.run_idx;
+							bytes = NULL;
+						}
+						if (best_num_bytes >= WAV_BOOTSTRAP_GOOD_ENOUGH_BYTES) {
+							free(bytes);
+							goto done;
+						}
 					}
-					if (best_num_bytes >= WAV_BOOTSTRAP_GOOD_ENOUGH_BYTES) {
-						free(bytes);
-						goto done;
+					else if (n > fallback_num_bytes) {
+						free(fallback_bytes);
+						fallback_bytes = bytes;
+						fallback_num_bytes = n;
+						fallback_baud = (int) (baud_x10 / 10);
+						fallback_boundary = cur;
+						fallback_lead_samples = lead_samples;
+						fallback_lead_run_idx = search.run_idx;
+						bytes = NULL;
 					}
 				}
 				free(bytes);
@@ -762,12 +794,23 @@ static void WAV_DecodeBootstrap(const WAV_ToneRun *runs, long count, long start_
 		}
 	}
 done:
-	*out_bytes = best_bytes;
-	*out_num_bytes = best_num_bytes;
-	*out_baud = best_baud;
-	*out_boundary = best_boundary;
-	*out_lead_samples = best_lead_samples;
-	*out_lead_run_idx = best_lead_run_idx;
+	if (best_num_bytes > 0) {
+		free(fallback_bytes);
+		*out_bytes = best_bytes;
+		*out_num_bytes = best_num_bytes;
+		*out_baud = best_baud;
+		*out_boundary = best_boundary;
+		*out_lead_samples = best_lead_samples;
+		*out_lead_run_idx = best_lead_run_idx;
+	}
+	else {
+		*out_bytes = fallback_bytes;
+		*out_num_bytes = fallback_num_bytes;
+		*out_baud = fallback_baud;
+		*out_boundary = fallback_boundary;
+		*out_lead_samples = fallback_lead_samples;
+		*out_lead_run_idx = fallback_lead_run_idx;
+	}
 }
 
 /* Converts the PCM data at DATA_OFFSET/DATA_SIZE in F into a synthetic CAS
