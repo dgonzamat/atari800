@@ -856,83 +856,24 @@ done:
 	}
 }
 
-/* Converts the PCM data at DATA_OFFSET/DATA_SIZE in F into a synthetic CAS
-   byte stream (FUJI header, an optional leading "data" chunk decoded from
-   a standard-speed bootstrap - see WAV_DecodeBootstrap() - and one or more
-   "wavp" chunks for the remaining turbo-speed signal), written to OUT. */
-static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per_sample,
-                             long data_offset, long data_size, FILE *out)
+/* Shared by WAV_ConvertToCAS() and CAS_RecoverBootstrapFromFSK(): given a
+   demodulated run array (RUNS/COUNT - already classified into MARK/SPACE
+   stretches, whether by the WAV comparator+classifier or read directly
+   from a CAS "fsk " chunk's own pulse pairs) at SAMPLE_RATE, writes a full
+   synthetic CAS stream to OUT: FUJI header, any standard-speed bootstrap
+   segments found (decoded into real "data" chunks - see
+   WAV_DecodeBootstrap()), and the remaining signal as "wavp" pulses.
+   Takes ownership of RUNS (frees it, on both success and failure). */
+static int WAV_EncodeBootstrapRecovery(WAV_ToneRun *runs, long count, int sample_rate, FILE *out)
 {
-	int bytes_per_sample = bits_per_sample / 8;
-	int frame_size = bytes_per_sample * channels;
-	long num_frames = data_size / frame_size;
-	UBYTE *block;
-	long peak = 1; /* avoid a zero-width hysteresis band on silence */
-	int hi_thresh, lo_thresh;
-	long frames_left;
 	WAV_ChunkWriter writer;
 	CAS_Header header;
-	WAV_ClassifyCtx *classify_ctx;
-	WAV_CollectCtx collect_ctx;
 	UBYTE *bootstrap_bytes;
 	long bootstrap_num_bytes, bootstrap_lead_samples;
 	int bootstrap_baud;
 	WAV_Cursor boundary;
 	int ok;
 	long i;
-
-	if (num_frames <= 0 || frame_size <= 0)
-		return FALSE;
-	block = (UBYTE *) Util_malloc(WAV_READ_FRAMES * frame_size);
-	/* WAV_ClassifyCtx holds a several-KB sliding window - heap-allocate it
-	   rather than risk a large stack frame in constrained environments. */
-	classify_ctx = (WAV_ClassifyCtx *) Util_malloc(sizeof(WAV_ClassifyCtx));
-
-	/* Pass 1: peak amplitude. */
-	if (fseek(f, data_offset, SEEK_SET) != 0) {
-		free(block);
-		free(classify_ctx);
-		return FALSE;
-	}
-	frames_left = num_frames;
-	while (frames_left > 0) {
-		long want = frames_left > WAV_READ_FRAMES ? WAV_READ_FRAMES : frames_left;
-		long got = (long) fread(block, frame_size, want, f);
-		long j;
-		if (got <= 0)
-			break;
-		for (j = 0; j < got; j++) {
-			long v = WAV_DownmixFrame(block + j * frame_size, channels, bytes_per_sample);
-			long a = v < 0 ? -v : v;
-			if (a > peak)
-				peak = a;
-		}
-		frames_left -= got;
-	}
-	hi_thresh = (int) (peak * WAV_HYSTERESIS_PERCENT / 100);
-	lo_thresh = -hi_thresh;
-
-	/* Pass 2: demodulate the whole file - classify each half-cycle against
-	   an adaptively calibrated threshold (see WAV_Classify()) and collect
-	   one merged run per same-tone stretch. The threshold starts low
-	   (biasing early, still-uncalibrated samples to the "long" tone) and
-	   self-corrects within the first few dozen half-cycles. */
-	memset(classify_ctx, 0, sizeof(*classify_ctx));
-	memset(&collect_ctx, 0, sizeof(collect_ctx));
-	classify_ctx->on_run = WAV_CollectRun;
-	classify_ctx->on_run_ctx = &collect_ctx;
-	classify_ctx->threshold = 1;
-	classify_ctx->tone = -1;
-	ok = WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
-	                         block, hi_thresh, lo_thresh, WAV_Classify, classify_ctx);
-	if (ok && classify_ctx->tone != -1)
-		ok = WAV_CollectRun(&collect_ctx, classify_ctx->tone == 0 ? 1 : 0, classify_ctx->merged_samples);
-	free(block);
-	free(classify_ctx);
-	if (!ok) {
-		free(collect_ctx.runs);
-		return FALSE;
-	}
 
 	/* Header: FUJI marker (empty description) + baud (matches the
 	   bootstrap "data" chunk, if any; unused by "wavp"). */
@@ -1003,7 +944,7 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 			long lead_run_idx;
 			CAS_Header data_header;
 
-			WAV_DecodeBootstrap(collect_ctx.runs, collect_ctx.count, search_from, max_tries,
+			WAV_DecodeBootstrap(runs, count, search_from, max_tries,
 			                     sample_rate, &bootstrap_bytes, &bootstrap_num_bytes,
 			                     &bootstrap_baud, &boundary, &bootstrap_lead_samples,
 			                     &lead_run_idx);
@@ -1061,14 +1002,14 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 			   parity-based level convention requires at the start of any
 			   chunk (see IMG_TAPE_SerinStatus()'s "wavp" branch). */
 			if (lead_run_idx > search_from) {
-				int true_level = collect_ctx.runs[search_from].level;
-				long first_remaining = collect_ctx.runs[search_from].duration - search_from_offset;
+				int true_level = runs[search_from].level;
+				long first_remaining = runs[search_from].duration - search_from_offset;
 				if (true_level != 0)
 					ok = WAV_EmitRun(&writer, 1, sample_rate);
 				if (ok && first_remaining > 0)
 					ok = WAV_EmitRun(&writer, first_remaining, sample_rate);
 				for (i = search_from + 1; ok && i < lead_run_idx; i++)
-					ok = WAV_EmitRun(&writer, collect_ctx.runs[i].duration, sample_rate);
+					ok = WAV_EmitRun(&writer, runs[i].duration, sample_rate);
 				if (ok)
 					ok = WAV_ChunkWriterFlush(&writer);
 			}
@@ -1119,26 +1060,100 @@ static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per
 	/* Emit whatever's left (from the last decode boundary, or from the very
 	   start if no bootstrap was found at all) as "wavp" pulses - same
 	   priming-for-parity logic as each inter-record lead-in above. */
-	if (boundary.run_idx < collect_ctx.count) {
-		int true_level = collect_ctx.runs[boundary.run_idx].level;
-		long remaining = collect_ctx.runs[boundary.run_idx].duration - boundary.offset;
+	if (boundary.run_idx < count) {
+		int true_level = runs[boundary.run_idx].level;
+		long remaining = runs[boundary.run_idx].duration - boundary.offset;
 		if (true_level != 0)
 			ok = WAV_EmitRun(&writer, 1, sample_rate);
 		if (ok && remaining > 0)
 			ok = WAV_EmitRun(&writer, remaining, sample_rate);
-		for (i = boundary.run_idx + 1; ok && i < collect_ctx.count; i++)
-			ok = WAV_EmitRun(&writer, collect_ctx.runs[i].duration, sample_rate);
+		for (i = boundary.run_idx + 1; ok && i < count; i++)
+			ok = WAV_EmitRun(&writer, runs[i].duration, sample_rate);
 	}
 	if (ok)
 		ok = WAV_ChunkWriterFlush(&writer);
 	if (!ok)
 		goto fail;
 
-	free(collect_ctx.runs);
+	free(runs);
 	return TRUE;
 fail:
-	free(collect_ctx.runs);
+	free(runs);
 	return FALSE;
+}
+
+/* Converts the PCM data at DATA_OFFSET/DATA_SIZE in F into a synthetic CAS
+   byte stream, written to OUT: demodulates the carrier into tone runs (see
+   WAV_ScanHalfCycles()/WAV_Classify()) and hands them to
+   WAV_EncodeBootstrapRecovery() to do the actual encoding. */
+static int WAV_ConvertToCAS(FILE *f, int channels, int sample_rate, int bits_per_sample,
+                             long data_offset, long data_size, FILE *out)
+{
+	int bytes_per_sample = bits_per_sample / 8;
+	int frame_size = bytes_per_sample * channels;
+	long num_frames = data_size / frame_size;
+	UBYTE *block;
+	long peak = 1; /* avoid a zero-width hysteresis band on silence */
+	int hi_thresh, lo_thresh;
+	long frames_left;
+	WAV_ClassifyCtx *classify_ctx;
+	WAV_CollectCtx collect_ctx;
+	int ok;
+
+	if (num_frames <= 0 || frame_size <= 0)
+		return FALSE;
+	block = (UBYTE *) Util_malloc(WAV_READ_FRAMES * frame_size);
+	/* WAV_ClassifyCtx holds a several-KB sliding window - heap-allocate it
+	   rather than risk a large stack frame in constrained environments. */
+	classify_ctx = (WAV_ClassifyCtx *) Util_malloc(sizeof(WAV_ClassifyCtx));
+
+	/* Pass 1: peak amplitude. */
+	if (fseek(f, data_offset, SEEK_SET) != 0) {
+		free(block);
+		free(classify_ctx);
+		return FALSE;
+	}
+	frames_left = num_frames;
+	while (frames_left > 0) {
+		long want = frames_left > WAV_READ_FRAMES ? WAV_READ_FRAMES : frames_left;
+		long got = (long) fread(block, frame_size, want, f);
+		long j;
+		if (got <= 0)
+			break;
+		for (j = 0; j < got; j++) {
+			long v = WAV_DownmixFrame(block + j * frame_size, channels, bytes_per_sample);
+			long a = v < 0 ? -v : v;
+			if (a > peak)
+				peak = a;
+		}
+		frames_left -= got;
+	}
+	hi_thresh = (int) (peak * WAV_HYSTERESIS_PERCENT / 100);
+	lo_thresh = -hi_thresh;
+
+	/* Pass 2: demodulate the whole file - classify each half-cycle against
+	   an adaptively calibrated threshold (see WAV_Classify()) and collect
+	   one merged run per same-tone stretch. The threshold starts low
+	   (biasing early, still-uncalibrated samples to the "long" tone) and
+	   self-corrects within the first few dozen half-cycles. */
+	memset(classify_ctx, 0, sizeof(*classify_ctx));
+	memset(&collect_ctx, 0, sizeof(collect_ctx));
+	classify_ctx->on_run = WAV_CollectRun;
+	classify_ctx->on_run_ctx = &collect_ctx;
+	classify_ctx->threshold = 1;
+	classify_ctx->tone = -1;
+	ok = WAV_ScanHalfCycles(f, channels, bytes_per_sample, frame_size, data_offset, num_frames,
+	                         block, hi_thresh, lo_thresh, WAV_Classify, classify_ctx);
+	if (ok && classify_ctx->tone != -1)
+		ok = WAV_CollectRun(&collect_ctx, classify_ctx->tone == 0 ? 1 : 0, classify_ctx->merged_samples);
+	free(block);
+	free(classify_ctx);
+	if (!ok) {
+		free(collect_ctx.runs);
+		return FALSE;
+	}
+
+	return WAV_EncodeBootstrapRecovery(collect_ctx.runs, collect_ctx.count, sample_rate, out);
 }
 
 /* Detects a WAV file and, if found, converts it into a synthetic in-memory
@@ -1222,11 +1237,188 @@ static int CassetteFlush(IMG_TAPE_t *file)
 	return TRUE;
 }
 
+/* --- CAS "fsk " bootstrap recovery --------------------------------------
+   A real .CAS file can itself be made entirely of "fsk " chunks (raw
+   pulse-timing data - see the format comment near the top of this file),
+   with no "data" chunk at all - a handful of real historical tape rips
+   turn out to be exactly this: evidently produced by an older/simpler
+   WAV-to-CAS conversion tool that only ever emitted "fsk ", never
+   attempting to also decode any standard-speed bootstrap into a real
+   "data" chunk the way WAV_OpenAsCAS() (above) does for a raw WAV capture.
+   Such a file has the exact same problem as the WAV files that motivated
+   WAV_EncodeBootstrapRecovery(): the OS's own interrupt-driven byte reader
+   never fires for "fsk " blocks (see the big comment above that function),
+   so a bootstrap that's only ever present as undecoded "fsk " pulses can
+   never actually be read by the stock OS.
+
+   The fix reuses WAV_EncodeBootstrapRecovery() directly: a CAS "fsk "
+   chunk's pulses are already exactly the demodulated MARK/SPACE tone-run
+   data that function expects (see CAS_ReadFSKAsRuns() below) - no audio
+   synthesis or comparator step is needed at all, unlike the WAV case. */
+
+/* Reads a run of consecutive "fsk " chunks (with any interleaving "baud"
+   marker chunks skipped) starting at the current position of F - which
+   must be positioned right at a chunk header - into a newly malloc'd
+   WAV_ToneRun array (one run per pulse pair). Each "fsk " chunk's own
+   pulses are read as exact 1/10ms durations (the format's own unit - see
+   the comment near the top of this file) and, per that same format's own
+   convention, alternate starting from SPACE (level 0) at the start of
+   EVERY such chunk (matching IMG_TAPE_WriteAdvance()/IMG_TAPE_SerinStatus()'s
+   own per-block parity: see how next_blockbyte, which resets to 0 at each
+   new block, drives the "(next_blockbyte / 2) & 1" level in
+   IMG_TAPE_SerinStatus()). Stops at the first chunk that's neither
+   "fsk " nor "baud", leaving F positioned right at that chunk's own
+   header, or at EOF. Returns FALSE only on a genuine read error partway
+   through a chunk's declared length (frees any partial RUNS itself and
+   sets *OUT_RUNS to NULL/*OUT_COUNT to 0 in that case). */
+static int CAS_ReadFSKAsRuns(FILE *f, WAV_ToneRun **out_runs, long *out_count)
+{
+	WAV_ToneRun *runs = NULL;
+	long count = 0, capacity = 0;
+
+	for (;;) {
+		CAS_Header h;
+		long chunk_start = ftell(f);
+		int length;
+
+		if (fread(&h, 1, 8, f) != 8)
+			break;
+		if (memcmp(h.identifier, "baud", 4) == 0) {
+			length = h.length_lo + (h.length_hi << 8);
+			if (fseek(f, length, SEEK_CUR) != 0)
+				goto fail;
+			continue;
+		}
+		if (memcmp(h.identifier, "fsk ", 4) != 0) {
+			fseek(f, chunk_start, SEEK_SET);
+			break;
+		}
+		length = h.length_lo + (h.length_hi << 8);
+		{
+			int remaining = length;
+			int level = 0; /* every "fsk " chunk starts at SPACE */
+			while (remaining >= 2) {
+				UBYTE b2[2];
+				if (fread(b2, 1, 2, f) != 2)
+					goto fail;
+				if (count == capacity) {
+					long new_cap = capacity ? capacity * 2 : 4096;
+					runs = (WAV_ToneRun *) Util_realloc(runs, new_cap * sizeof(WAV_ToneRun));
+					capacity = new_cap;
+				}
+				runs[count].level = level;
+				runs[count].duration = b2[0] | (b2[1] << 8);
+				count++;
+				level = !level;
+				remaining -= 2;
+			}
+			if (remaining > 0 && fseek(f, remaining, SEEK_CUR) != 0)
+				goto fail;
+		}
+	}
+	*out_runs = runs;
+	*out_count = count;
+	return TRUE;
+fail:
+	free(runs);
+	*out_runs = NULL;
+	*out_count = 0;
+	return FALSE;
+}
+
+/* Detects a CAS file whose first real content chunk (right after the FUJI
+   marker and its description, and past any leading "baud" chunk) is
+   "fsk " - i.e. one with no bootstrap decoded into a real "data" chunk at
+   all (see the big comment above) - and, if so, converts it on the fly
+   into a synthetic in-memory CAS file (via tmpfile()) with any
+   standard-speed bootstrap recovered into real "data" chunks, exactly the
+   way WAV_OpenAsCAS() does for a raw WAV capture (just skipping the
+   demodulation step, since "fsk " pulses are already the demodulated
+   tone-run data - see CAS_ReadFSKAsRuns() above). FILE must be positioned
+   right after the initial 6-byte FUJI header, and HEADER holds that
+   header's already-read bytes (the same convention ParseCASBody() itself
+   uses). A CAS that already starts with a real "data" chunk needs none of
+   this - it already works via the normal ParseCASBody() path below - so
+   this leaves it untouched. Returns the tmpfile (rewound, ready to be
+   parsed as CAS), or NULL if this isn't a pure-"fsk "-first CAS, or on
+   error; FILE's original position is restored in either case. */
+static FILE *CAS_RecoverBootstrapFromFSK(FILE *file, const CAS_Header *header)
+{
+	long start_pos = ftell(file);
+	UWORD length = header->length_lo | (header->length_hi << 8);
+	WAV_ToneRun *runs;
+	long count;
+	FILE *tmp;
+	CAS_Header h;
+
+	/* Skip past the 2 aux bytes + description, exactly as ParseCASBody()
+	   does, to reach the first real content chunk. */
+	if (fseek(file, 2L + length, SEEK_CUR) != 0)
+		goto restore;
+
+	/* Skip any leading "baud" marker chunk(s) to find the first actual
+	   content chunk, without consuming it. */
+	for (;;) {
+		long before = ftell(file);
+		if (fread(&h, 1, 8, file) != 8) {
+			fseek(file, before, SEEK_SET);
+			break;
+		}
+		if (memcmp(h.identifier, "baud", 4) != 0) {
+			fseek(file, before, SEEK_SET);
+			break;
+		}
+		{
+			int blen = h.length_lo + (h.length_hi << 8);
+			if (fseek(file, blen, SEEK_CUR) != 0)
+				goto restore;
+		}
+	}
+
+	if (fread(&h, 1, 8, file) != 8)
+		goto restore;
+	if (memcmp(h.identifier, "fsk ", 4) != 0) {
+		/* Already starts with "data" (or something else entirely) - not
+		   this function's problem to solve. */
+		goto restore;
+	}
+	fseek(file, -8L, SEEK_CUR);
+
+	if (!CAS_ReadFSKAsRuns(file, &runs, &count))
+		goto restore;
+	if (count == 0) {
+		free(runs);
+		goto restore;
+	}
+
+	tmp = tmpfile();
+	if (tmp == NULL) {
+		free(runs);
+		goto restore;
+	}
+	/* Virtual sample rate of 10000Hz makes a "sample" exactly 1/10ms -
+	   matching the "fsk " pulses' own native unit exactly, so no precision
+	   is lost converting them into WAV_EncodeBootstrapRecovery()'s
+	   sample-count convention. */
+	if (!WAV_EncodeBootstrapRecovery(runs, count, 10000, tmp)) {
+		fclose(tmp);
+		goto restore;
+	}
+	rewind(tmp);
+	fseek(file, start_pos, SEEK_SET);
+	return tmp;
+restore:
+	fseek(file, start_pos, SEEK_SET);
+	return NULL;
+}
+/* --- end of CAS "fsk " bootstrap recovery -------------------------------- */
+
 /* Parses the CAS chunk stream in IMG->file (already positioned right after
    the initial 6-byte FUJI header, whose already-read bytes are passed in
    HEADER) into IMG's block table. Common tail for both real .CAS files and
    the synthetic CAS stream WAV files are converted into (see
-   WAV_OpenAsCAS()). Returns FALSE on read error. */
+   WAV_OpenAsCAS()), and the fsk-recovered stream CAS_RecoverBootstrapFromFSK()
+   produces. Returns FALSE on read error. */
 static int ParseCASBody(IMG_TAPE_t *img, CAS_Header *header, char const **description)
 {
 	UWORD length;
@@ -1319,7 +1511,27 @@ IMG_TAPE_t *IMG_TAPE_Open(char const *filename, int *writable, char const **desc
 		&& header.identifier[1] == 'U'
 		&& header.identifier[2] == 'J'
 		&& header.identifier[3] == 'I') {
-		/* CAS file */
+		/* CAS file - but see CAS_RecoverBootstrapFromFSK() for a special
+		   case: a CAS whose bootstrap was never decoded into a "data"
+		   chunk (several real historical tape rips turn out to be exactly
+		   this) is converted on the fly into an equivalent stream with any
+		   standard-speed bootstrap recovered, the same way WAV_OpenAsCAS()
+		   does for a raw WAV capture below - it's a no-op for any CAS that
+		   already starts with a real "data" chunk. */
+		FILE *fsk_tmp = CAS_RecoverBootstrapFromFSK(img->file, &header);
+		if (fsk_tmp != NULL) {
+			CAS_Header new_header;
+			if (fread(&new_header, 1, 6, fsk_tmp) != 6) {
+				fclose(fsk_tmp);
+				fclose(img->file);
+				free(img);
+				return NULL;
+			}
+			fclose(img->file);
+			img->file = fsk_tmp;
+			header = new_header;
+			*writable = FALSE; /* fsk-recovered tapes are playback-only */
+		}
 		if (!ParseCASBody(img, &header, description)) {
 			fclose(img->file);
 			free(img);
