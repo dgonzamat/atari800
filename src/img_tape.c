@@ -1857,16 +1857,22 @@ int IMG_TAPE_SerinStatus(IMG_TAPE_t *file, int event_time_left)
 	if (file->block_is_fsk) {
 		/* Signal can be computed from current position in the block -
 		   first 2 bytes are SPACE (0), each next 2 bytes alternate between
-		   MARK (1) and SPACE (0). The previous "~x & 1" here started the
-		   chunk at MARK instead of SPACE - inverted relative to both this
-		   comment and the "mark tone"=1 / "space tone"=0 convention the
-		   non-fsk branch below uses (and to the CAS format's own spec:
-		   an "fsk " chunk always begins with the SPACE signal). */
-		return (file->next_blockbyte / 2) & 1;
+		   MARK (1) and SPACE (0).
+
+		   The complement matters: IMG_TAPE_Read() POST-increments
+		   next_blockbyte, so while pulse k is being played the index
+		   already sits at 2*(k+1). "~(x/2) & 1" therefore yields k&1 -
+		   0 (SPACE) for the first pulse, as the CAS format requires -
+		   whereas dropping the "~" yields (k+1)&1 and starts every
+		   chunk on MARK. Turbo loaders that poll SKSTAT bit 4 directly
+		   (rather than going through POKEY's UART) wait on a sustained
+		   SPACE tone to synchronize, and never see it if this is
+		   inverted. */
+		return ~(file->next_blockbyte / 2) & 1;
 	} else if (file->block_is_wav) {
-		/* Same parity trick as the fsk branch above, just over 4-byte
+		/* Same parity rule as the fsk branch above, just over 4-byte
 		   (32-bit tick count) pulses instead of 2-byte ones. */
-		return (file->next_blockbyte / 4) & 1;
+		return ~(file->next_blockbyte / 4) & 1;
 	} else {
 		int bit = 0; /* 0: stop bit, 1: 7th bit, ..., 8: 0th bit, 9: start bit */
 
