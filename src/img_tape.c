@@ -737,7 +737,7 @@ enum { WAV_BOOTSTRAP_GOOD_ENOUGH_BYTES = 32 };
 /* Searches RUNS[START_RUN_IDX..COUNT) across a range of candidate baud
    rates for the start of a standard-speed byte stream, and decodes as many
    contiguous bytes as keep validating. Tries at most MAX_TRIES candidate
-   start-bit positions per baud rate. Sets *OUT_BYTES/*OUT_NUM_BYTES to a
+   start-bit positions per baud rate. Sets *OUT_BYTES and *OUT_NUM_BYTES to a
    malloc'd buffer (caller frees), *OUT_BAUD to the winning rate, and
    *OUT_BOUNDARY to the position right after the last decoded byte - or
    *out_num_bytes to 0 (*OUT_BYTES NULL, *OUT_BOUNDARY zeroed) if no
@@ -1265,12 +1265,12 @@ static int CassetteFlush(IMG_TAPE_t *file)
    convention, alternate starting from SPACE (level 0) at the start of
    EVERY such chunk (matching IMG_TAPE_WriteAdvance()/IMG_TAPE_SerinStatus()'s
    own per-block parity: see how next_blockbyte, which resets to 0 at each
-   new block, drives the "(next_blockbyte / 2) & 1" level in
+   new block, drives the "~(next_blockbyte / 2) & 1" level in
    IMG_TAPE_SerinStatus()). Stops at the first chunk that's neither
    "fsk " nor "baud", leaving F positioned right at that chunk's own
    header, or at EOF. Returns FALSE only on a genuine read error partway
    through a chunk's declared length (frees any partial RUNS itself and
-   sets *OUT_RUNS to NULL/*OUT_COUNT to 0 in that case). */
+   sets *OUT_RUNS to NULL and *OUT_COUNT to 0 in that case). */
 static int CAS_ReadFSKAsRuns(FILE *f, WAV_ToneRun **out_runs, long *out_count)
 {
 	WAV_ToneRun *runs = NULL;
