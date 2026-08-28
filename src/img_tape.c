@@ -53,6 +53,15 @@ struct IMG_TAPE_t {
 	int block_is_fsk; /* FALSE - current chunk's type  is "data", otherwise "fsk " */
 	int block_is_wav; /* TRUE if current chunk's type is "wavp" (see WAV_OpenAsCAS()) - mutually exclusive with block_is_fsk */
 	int block_length; /* Length of the block currently held in BUFFER */
+	/* While a turbo recorder drives the tape line by hand (toggling SKCTL's
+	   force-break bit) rather than clocking bytes through POKEY's serial
+	   port, BUFFER holds 16-bit pulse widths instead of bytes and the block
+	   is flushed as "fsk " rather than "data". The two never overlap: each
+	   mode flushes the other's pending block before it starts. */
+	int writing_fsk;
+	int fsk_started; /* TRUE once the first SPACE period has been opened */
+	int save_baudrate; /* Rate the block being written is really going out at */
+	int last_baudrate; /* Rate the last "baud" chunk in the file announced */
 	int num_blocks; /* Number of data blocks in the whole file */
 	ULONG block_offsets[MAX_BLOCKS]; /* File offsets for each data block*/
 	int block_baudrates[MAX_BLOCKS]; /* Baudrates for each data block in the file */
@@ -1199,6 +1208,7 @@ static int WriteRecord(IMG_TAPE_t *file)
 {
 	CAS_Header header;
 	int result;
+	int announce = 0; /* bytes taken by a "baud" chunk written ahead of this one */
 
 	/* on a raw file, saving is denied because it can hold
 	    only 1 file and could cause confusion */
@@ -1207,27 +1217,44 @@ static int WriteRecord(IMG_TAPE_t *file)
 	/* always append */
 	if (fseek(file->file, file->block_offsets[file->num_blocks], SEEK_SET) != 0)
 		return FALSE;
+	/* A rate change has to be announced before the block it applies to, the
+	   same way IMG_TAPE_Open() reads it back. Pulses carry their own timing
+	   and are unaffected, so they never trigger one. */
+	if (!file->writing_fsk && file->save_baudrate != file->last_baudrate) {
+		CAS_Header rate;
+		memcpy(rate.identifier, "baud", 4);
+		rate.length_lo = rate.length_hi = 0;
+		rate.aux_lo = file->save_baudrate & 0xff;
+		rate.aux_hi = (file->save_baudrate >> 8) & 0xff;
+		if (fwrite(&rate, 1, 8, file->file) != 8)
+			return FALSE;
+		file->last_baudrate = file->save_baudrate;
+		announce = 8;
+	}
 	/* write record header */
-	memcpy(header.identifier, "data", 4);
+	memcpy(header.identifier, file->writing_fsk ? "fsk " : "data", 4);
 	header.length_lo = file->block_length & 0xFF;
 	header.length_hi = (file->block_length >> 8) & 0xFF;
 	header.aux_lo = file->save_gap & 0xff;
 	header.aux_hi = (file->save_gap >> 8) & 0xff;
 	if (fwrite(&header, 1, 8, file->file) != 8)
 		return FALSE;
-	/* Saving is supported only with standard baudrate. */
-	file->block_baudrates[file->num_blocks] = DEFAULT_BAUDRATE;
+	file->block_baudrates[file->num_blocks] = file->last_baudrate;
 	file->num_blocks++;
-	file->block_offsets[file->num_blocks] = file->block_offsets[file->num_blocks - 1] + file->block_length + 8;
+	file->block_offsets[file->num_blocks] = file->block_offsets[file->num_blocks - 1]
+	                                      + announce + file->block_length + 8;
 	file->current_block = file->num_blocks;
 	/* write record */
 	result = fwrite(file->buffer, 1, file->block_length, file->file) == file->block_length;
 	if (result) {
 		file->save_gap = 0;
 		file->block_length = 0;
+		file->writing_fsk = FALSE;
+		file->fsk_started = FALSE;
 	}
 	return result;
 }
+
 
 /* Flush any unwritten data to tape. */
 static int CassetteFlush(IMG_TAPE_t *file)
@@ -1634,6 +1661,10 @@ IMG_TAPE_t *IMG_TAPE_Create(char const *filename, char const *description)
 	img->isCAS = TRUE;
 	img->savetime = 0;
 	img->save_gap = 0;
+	img->save_baudrate = DEFAULT_BAUDRATE;
+	img->last_baudrate = DEFAULT_BAUDRATE; /* the "baud" chunk just written */
+	img->writing_fsk = FALSE;
+	img->fsk_started = FALSE;
 	img->next_blockbyte = 0;
 	img->block_length = 0;
 	img->current_block = 0;
@@ -1797,7 +1828,11 @@ int IMG_TAPE_WriteByte(IMG_TAPE_t *file, UBYTE byte, unsigned int pokey_counter)
 	   start of writing of current BYTE (in ms). */
 	/* Note: byte duration in seconds: pokey_counter / (1789790/2) * 10
 	 * in milliseconds: pokey_counter * 10 * 1000 / 1789790/2 */
-	int put_delay = file->savetime /1790 - 10 * pokey_counter / 895; /* better accuracy not needed */
+	int put_delay;
+	/* A pending run of hand-driven pulses belongs before this byte. */
+	if (file->writing_fsk && !WriteRecord(file))
+		return FALSE;
+	put_delay = file->savetime /1790 - 10 * pokey_counter / 895; /* better accuracy not needed */
 	if (put_delay > 05) {
 
 		/* write previous block */
@@ -1808,12 +1843,72 @@ int IMG_TAPE_WriteByte(IMG_TAPE_t *file, UBYTE byte, unsigned int pokey_counter)
 		/* set new gap-time */
 		file->save_gap += put_delay;
 	}
+	/* POKEY_COUNTER is the serial divisor this byte actually went out with:
+	   a byte lasts COUNTER/89500 s, so the rate is 895000/COUNTER bits per
+	   second. A turbo recorder reprograms it partway through the tape -
+	   TurboSoft leaves the boot record at standard speed and switches to
+	   roughly 800 baud for everything its own loader reads - and replaying
+	   those blocks at 600 leaves that loader reading nonsense.
+
+	   This has to be recorded after the flush above, not before it: the
+	   flush writes the block that PRECEDES this byte, and it must carry the
+	   rate its own bytes went out with, not the one starting here. */
+	if (pokey_counter > 0)
+		file->save_baudrate = 895000 / pokey_counter;
 	/* put byte into buffer */
 	EnlargeBuffer(file, file->block_length + 1);
 	file->buffer[file->block_length++] = byte;
 	/* set new last byte-put time */
 	file->savetime = 0;
 
+	return TRUE;
+}
+
+/* Records one transition of the tape's data line, closing the level period
+   that just ended. LEVEL is TRUE for SPACE (SKCTL's force-break bit set,
+   holding the line low) and FALSE for MARK.
+
+   This is the only way a turbo recorder's output reaches the image at all.
+   Such a recorder writes its standard-speed records through POKEY's serial
+   port - those arrive as bytes via IMG_TAPE_WriteByte() - but generates the
+   sync tone the loader waits on, and its copy-protection pulses, by toggling
+   SKCTL by hand. Neither is a byte at any baud rate, so both are lost unless
+   captured as raw pulse widths, which is exactly what an "fsk " chunk holds.
+
+   A chunk always opens on SPACE, per the CAS format, so periods before the
+   line first goes low are discarded rather than written at the wrong parity. */
+int IMG_TAPE_WriteTransition(IMG_TAPE_t *file, int level)
+{
+	unsigned int tenths;
+
+	if (!file->isCAS)
+		return FALSE;
+
+	if (!file->writing_fsk) {
+		/* Any bytes still buffered were recorded before these pulses. */
+		if (file->block_length > 0 && !WriteRecord(file))
+			return FALSE;
+		file->writing_fsk = TRUE;
+		file->fsk_started = FALSE;
+	}
+
+	if (!file->fsk_started) {
+		if (!level)
+			return TRUE; /* still ahead of the first SPACE */
+		file->fsk_started = TRUE;
+		file->save_gap += file->savetime / 1790; /* lead-in becomes the gap */
+		file->savetime = 0;
+		return TRUE;
+	}
+
+	/* CPU ticks -> 1/10 ms, the unit an "fsk " chunk stores */
+	tenths = file->savetime / 179;
+	file->savetime = 0;
+	if (tenths > 0xFFFF)
+		tenths = 0xFFFF;
+	EnlargeBuffer(file, file->block_length + 2);
+	file->buffer[file->block_length++] = (UBYTE) (tenths & 0xFF);
+	file->buffer[file->block_length++] = (UBYTE) (tenths >> 8);
 	return TRUE;
 }
 

@@ -302,6 +302,12 @@ void CASSETTE_PutByte(int byte)
 		IMG_TAPE_WriteByte(cassette_file, byte, POKEY_AUDF[POKEY_CHAN3] + POKEY_AUDF[POKEY_CHAN4]*0x100);
 }
 
+void CASSETTE_TwoToneWrite(int space)
+{
+	if (!ESC_enable_sio_patch && CASSETTE_writable && CASSETTE_record)
+		IMG_TAPE_WriteTransition(cassette_file, space);
+}
+
 void CASSETTE_TapeMotor(int onoff)
 {
 	if (cassette_motor != onoff) {
