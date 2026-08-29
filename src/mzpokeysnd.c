@@ -38,8 +38,12 @@
 #include "gtia.h"
 
 #define CONSOLE_VOL 8
+/* The tape rides on the same summing point as the console speaker, so it
+   widens the mixing array's index range by its own volume too. Kept in
+   proportion to the value pokeysnd.c uses on its own scale. */
+#define TAPE_VOL 3
 #ifdef NONLINEAR_MIXING
-static const double pokeymix[61+CONSOLE_VOL] = { /* Nonlinear POKEY mixing array */
+static const double pokeymix[61+CONSOLE_VOL+TAPE_VOL] = { /* Nonlinear POKEY mixing array */
 0.000000, 5.169146, 10.157015, 15.166247,
 20.073793, 24.927443, 29.728237, 34.495266,
 39.181262, 43.839780, 48.429508, 52.932530,
@@ -55,8 +59,9 @@ static const double pokeymix[61+CONSOLE_VOL] = { /* Nonlinear POKEY mixing array
 116.024396, 116.416097, 116.803169, 117.155108,
 117.532921, 117.835494, 118.196180, 118.502785,
 118.825177, 119.138170, 119.421378, 119.734493,
-/* need to add CONSOLE_VOL extra copies of the last val */
-120.000000,120.0,120.0,120.0,120.0,120.0,120.0,120.0,120.0};
+/* need to add CONSOLE_VOL+TAPE_VOL extra copies of the last val */
+120.000000,120.0,120.0,120.0,120.0,120.0,120.0,120.0,120.0,
+120.0,120.0,120.0};
 #endif
 
 #define SND_FILTER_SIZE  2048
@@ -2385,7 +2390,8 @@ static void generate_sync(unsigned int num_ticks)
 static void Update_consol_sound_mz( int set )
 {
 	if (set) { /* The set variable is 0 only in VOL_ONLY_SOUND routines */
-		pokey_states[0].speaker = GTIA_speaker*CONSOLE_VOL;
+		pokey_states[0].speaker = GTIA_speaker*CONSOLE_VOL
+		                        + POKEYSND_tape_level*TAPE_VOL;
 		pokey_states[0].forcero = 1; /* first chip */
 	}
 }

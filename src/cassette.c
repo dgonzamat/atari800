@@ -35,6 +35,7 @@
 #include "log.h"
 #include "util.h"
 #include "pokey.h"
+#include "pokeysnd.h"
 
 static IMG_TAPE_t *cassette_file = NULL;
 
@@ -384,14 +385,25 @@ static int CassetteRead(int num_ticks)
 	return FALSE;
 }
 
+/* What the recorder is putting on its audio track right now. Silence unless a
+   tape is actually running past the head, so a stopped or finished tape does
+   not sit on the output with a DC offset. */
+static void UpdateTapeAudio(void)
+{
+	POKEYSND_UpdateTapeAudio(CASSETTE_readable ? CASSETTE_IOLineStatus() : 0);
+}
+
 int CASSETTE_AddScanLine(void)
 {
 	/* increment elapsed cassette time */
 	if (CASSETTE_record) {
 		CassetteWrite(114);
 		return FALSE;
-	} else
-		return CassetteRead(114);
+	} else {
+		int loaded = CassetteRead(114);
+		UpdateTapeAudio();
+		return loaded;
+	}
 }
 
 void CASSETTE_ResetPOKEY(void)
