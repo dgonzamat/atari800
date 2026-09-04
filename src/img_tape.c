@@ -378,6 +378,10 @@ enum { WAV_HIST_SIZE = 256 };
    which can converge on a lopsided local optimum when, as here, the two
    populations are close together and roughly balanced). Returns the
    boundary length. */
+/* Returned when the window carries no evidence for a boundary at all. Not a
+   valid half-cycle length, so it can never be confused with one. */
+enum { WAV_NO_THRESHOLD = -1 };
+
 static long WAV_HistThreshold(const unsigned long *hist)
 {
 	double total_count = 0, total_sum = 0;
@@ -390,7 +394,7 @@ static long WAV_HistThreshold(const unsigned long *hist)
 		total_sum += (double) i * hist[i];
 	}
 	if (total_count == 0)
-		return 1;
+		return WAV_NO_THRESHOLD;
 
 	for (i = 1; i < WAV_HIST_SIZE; i++) {
 		double count_above, sum_above, mean_below, mean_above, diff, variance;
@@ -409,6 +413,12 @@ static long WAV_HistThreshold(const unsigned long *hist)
 			best_t = i;
 		}
 	}
+	/* Every candidate boundary left one side empty: the window holds a
+	   single half-cycle length, so there are no two clusters to split and
+	   this window says nothing about where the boundary is. Report that
+	   rather than a number - see the caller. */
+	if (best_variance < 0)
+		return WAV_NO_THRESHOLD;
 	return best_t;
 }
 
@@ -493,8 +503,18 @@ static int WAV_Classify(void *ctx_, long run_samples, long smoothed_samples)
 	ctx->window_pos = (ctx->window_pos + 1) % WAV_WINDOW_SIZE;
 
 	if (++ctx->since_recalibrate >= WAV_RECALIBRATE_EVERY) {
+		long fresh;
 		ctx->since_recalibrate = 0;
-		ctx->threshold = WAV_HistThreshold(ctx->hist);
+		fresh = WAV_HistThreshold(ctx->hist);
+		/* A window with a single half-cycle length - a plain leader tone,
+		   which is most of what a tape carries between records - cannot
+		   say where the two tones divide. Keep the boundary already
+		   calibrated instead of taking a meaningless number: adopting one
+		   here used to drop the threshold below every real half-cycle, so
+		   the whole tape classified as one tone and the carrier stopped
+		   demodulating for as long as the leader lasted. */
+		if (fresh != WAV_NO_THRESHOLD)
+			ctx->threshold = fresh;
 	}
 	return TRUE;
 }
@@ -574,27 +594,50 @@ static int WAV_CursorAdvance(const WAV_ToneRun *runs, long count, WAV_Cursor *cu
    the very start of its start bit. On success returns the byte (0-255)
    and leaves *cur at the start of the next byte's potential start bit; on
    a framing error returns -1 and leaves *cur unspecified. */
+/* Advances C to the exact offset TARGET (in fractional samples, measured
+   from where the byte started) and returns the tone level there. WALKED
+   carries how many whole samples have actually been consumed so far, so
+   each hop moves by the difference between rounded absolute positions.
+
+   Stepping by a rounded bit period instead would drift: at 600 baud and
+   44100 Hz a bit is 73.5 samples, so a fixed 74-sample step gains half a
+   sample every bit - five per byte - and after six bytes the cursor sits
+   most of a bit cell late and the framing check fails. Real captures of
+   standard-speed records were being rejected on exactly that, six bytes
+   in, with the sync bytes already correctly decoded. Rounding the absolute
+   position keeps the error bounded at half a sample no matter how long the
+   record runs. */
+static int WAV_SeekBitCenter(const WAV_ToneRun *runs, long count, WAV_Cursor *c,
+                             double target, long *walked)
+{
+	long want = (long) (target + 0.5);
+	long hop = want - *walked;
+	if (hop < 0)
+		hop = 0;
+	*walked = want;
+	return WAV_CursorAdvance(runs, count, c, hop);
+}
+
 static int WAV_TryDecodeByte(const WAV_ToneRun *runs, long count, WAV_Cursor *cur, double bit_samples)
 {
 	WAV_Cursor c = *cur;
-	long step = (long) (bit_samples + 0.5);
-	long half = step / 2;
+	long walked = 0;
 	int byte = 0, bit, level;
 
-	level = WAV_CursorAdvance(runs, count, &c, half); /* center of the start bit */
+	level = WAV_SeekBitCenter(runs, count, &c, bit_samples * 0.5, &walked); /* start bit */
 	if (level != 0)
 		return -1;
 	for (bit = 0; bit < 8; bit++) {
-		level = WAV_CursorAdvance(runs, count, &c, step); /* center of the next data bit */
+		level = WAV_SeekBitCenter(runs, count, &c, bit_samples * (1.5 + bit), &walked);
 		if (level < 0)
 			return -1;
 		if (level)
 			byte |= 1 << bit;
 	}
-	level = WAV_CursorAdvance(runs, count, &c, step); /* center of the stop bit */
+	level = WAV_SeekBitCenter(runs, count, &c, bit_samples * 9.5, &walked); /* stop bit */
 	if (level != 1)
 		return -1;
-	WAV_CursorAdvance(runs, count, &c, step - half); /* end of the stop bit */
+	WAV_SeekBitCenter(runs, count, &c, bit_samples * 10.0, &walked); /* end of the stop bit */
 	*cur = c;
 	return byte;
 }
@@ -709,8 +752,17 @@ enum { WAV_MAX_BOOTSTRAP_BYTES = 4096 };
 /* How many candidate start-bit positions (successive runs) to try before
    concluding there's no standard-speed bootstrap at all. Used for the very
    first search (from the start of the file, where the leader tone before
-   the bootstrap can legitimately be several seconds long). */
-enum { WAV_MAX_START_CANDIDATES = 8000 };
+   the bootstrap can legitimately be several seconds long).
+
+   8000 runs is only about six seconds of tape, which turned out to be far
+   too little for a real capture: a rip of a shared-loader title recorded a
+   full minute of signal - the tail of the previous program on the same
+   side - before its own bootstrap, putting the first real record 86000
+   candidate positions in. The search gave up long before reaching it and
+   the tape read as unbootable pulses. This covers a couple of minutes of
+   lead-in instead; it is a bound on wasted work, not a statement about
+   where bootstraps live, so it should be generous. */
+enum { WAV_MAX_START_CANDIDATES = 250000 };
 
 /* Same, but for searching right after an already-decoded segment for a
    FOLLOWING one (real boot loaders are often more than one standard-speed
