@@ -2,6 +2,7 @@
    libatari800 es C puro (sin SDL): expone el framebuffer indexado y la
    inyeccion de teclas/joystick, que es todo lo que necesita un front-end
    de canvas. */
+#include <stdio.h>
 #include <string.h>
 #include <emscripten.h>
 
@@ -10,6 +11,9 @@
 #include "memory.h"
 #include "cassette.h"
 #include "esc.h"
+#include "sio.h"
+#include "cartridge.h"
+#include "binload.h"
 
 /* Colours_table[] vive en el core; 0x00RRGGBB por indice de color Atari. */
 extern int Colours_table[256];
@@ -129,6 +133,39 @@ static int prepara(int machine, int ram)
 /* Cuanta RAM tiene puesta ahora mismo, en KB. */
 EMSCRIPTEN_KEEPALIVE
 int a8_ram(void) { return MEMORY_ram_size; }
+
+/* Enciende la maquina elegida sin nada puesto: la placa con la RAM que se
+   pida, sin cinta, sin disco y sin cartucho, en frio. Un XL/XE sin BASIC y
+   sin soporte cae en su SELF TEST, que es lo que tiene que verse al elegir
+   modelo: la maquina nueva recien encendida, no la anterior con otra
+   carcasa encima.
+
+   Hay que soltar a mano lo que dejo el juego anterior. Un .xex deja abierto
+   su fichero y la bandera que lo vuelve a inyectar en cada arranque; sin
+   cerrarlos, "encender vacia" cargaba otra vez el ultimo programa. */
+EMSCRIPTEN_KEEPALIVE
+int a8_encender(int machine, int ram)
+{
+    int d;
+    if (!prepara(machine, ram))
+        return 0;
+    if (BINLOAD_bin_file != NULL) {
+        fclose(BINLOAD_bin_file);
+        BINLOAD_bin_file = NULL;
+    }
+    BINLOAD_start_binloading = FALSE;
+    BINLOAD_loading_basic = 0;
+    CASSETTE_Remove();
+    CASSETTE_hold_start = FALSE;
+    for (d = 1; d <= SIO_MAX_DRIVES; d++)
+        SIO_Dismount(d);
+    CARTRIDGE_Remove();
+    ESC_enable_sio_patch = TRUE;
+    ESC_UpdatePatches();
+    Atari800_Coldstart();
+    libatari800_clear_input_array(&input);
+    return 1;
+}
 
 /* Cambia de juego en caliente: monta el fichero y arranca en frio.
    Devuelve el tipo de fichero detectado, o 0 si no se pudo abrir. */
