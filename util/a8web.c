@@ -14,6 +14,7 @@
 #include "sio.h"
 #include "cartridge.h"
 #include "binload.h"
+#include "devices.h"
 
 /* Colours_table[] vive en el core; 0x00RRGGBB por indice de color Atari. */
 extern int Colours_table[256];
@@ -22,6 +23,19 @@ extern int Colours_table[256];
 #define SCR_H 240
 
 static input_template_t input;
+
+/* Los parches del emulador (SIO, y los dispositivos P: y H:) escriben sobre
+   la ROM en memoria, y con cualquiera puesto ademas anula en $C31D la marca
+   de suma de control mala. El SELF TEST suma esa ROM: con parches, sus dos
+   barras de ROM salen como falladas aunque la ROM este bien. Se quitan para
+   encender vacia (lo que cae en el SELF TEST) y se ponen para cargar. */
+static void parches(int sio, int dispositivos)
+{
+    ESC_enable_sio_patch = sio;
+    Devices_enable_h_patch = dispositivos;
+    Devices_enable_p_patch = dispositivos;
+    ESC_UpdatePatches();
+}
 static unsigned int rgba[SCR_W * SCR_H];   /* buffer que lee el canvas */
 
 EMSCRIPTEN_KEEPALIVE
@@ -44,6 +58,8 @@ int a8_init(void)
     /* Sin esto, un BRK aborta la emulacion via longjmp y varios cargadores
        de disco se quedan colgados a mitad de carga. */
     libatari800_continue_emulation_on_brk(1);
+    parches(FALSE, FALSE);              /* arranca en el SELF TEST: ROM intacta */
+    Atari800_Coldstart();
     libatari800_clear_input_array(&input);
     return 1;
 }
@@ -160,8 +176,7 @@ int a8_encender(int machine, int ram)
     for (d = 1; d <= SIO_MAX_DRIVES; d++)
         SIO_Dismount(d);
     CARTRIDGE_Remove();
-    ESC_enable_sio_patch = TRUE;
-    ESC_UpdatePatches();
+    parches(FALSE, FALSE);
     Atari800_Coldstart();
     libatari800_clear_input_array(&input);
     return 1;
@@ -178,8 +193,7 @@ int a8_load_tape(const char *path, int machine, int ram)
 {
     if (!prepara(machine, ram))
         return 0;
-    ESC_enable_sio_patch = FALSE;
-    ESC_UpdatePatches();
+    parches(FALSE, TRUE);
     if (!CASSETTE_Insert(path))
         return 0;
     CASSETTE_hold_start = TRUE;      /* equivale a mantener START al encender */
@@ -198,8 +212,7 @@ int a8_load(const char *path, int machine, int ram)
     if (!prepara(machine, ram))
         return 0;
     CASSETTE_Remove();
-    ESC_enable_sio_patch = TRUE;     /* los discos si se benefician del parche */
-    ESC_UpdatePatches();
+    parches(TRUE, TRUE);             /* los discos si se benefician del parche */
     t = libatari800_reboot_with_file(path);
     libatari800_clear_input_array(&input);
     return t;
