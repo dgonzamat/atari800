@@ -4,6 +4,7 @@
    de canvas. */
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <emscripten.h>
 
 #include "libatari800/libatari800.h"
@@ -36,6 +37,28 @@ static void parches(int sio, int dispositivos)
     Devices_enable_p_patch = dispositivos;
     ESC_UpdatePatches();
 }
+
+/* Los programas del usuario viven en esta carpeta, y la pagina la guarda en
+   el navegador. */
+#define PROGRAMAS "/programas"
+/* D2: es un segundo disquete: ahi la pagina deja los programas de revista y
+   el listado que se pega. */
+#define EJEMPLOS "/ejemplos"
+
+/* Encendido en BASIC, como un XL sin cinta ni disco: el BASIC de la placa
+   (Altirra BASIC, libre y compatible con el Atari BASIC) queda activo y el
+   dispositivo H: del emulador se hace pasar por D:, apuntando a la carpeta
+   de programas. Sin DOS no hay otro D:, asi que SAVE "D:JUEGO.BAS" y
+   LOAD "D:JUEGO.BAS" se escriben como en los 80 y van a parar ahi.
+   Fuera del BASIC todo vuelve a ser como antes: sin BASIC (que un XL con
+   BASIC puesto no arranca muchos juegos) y H: con su nombre y sin escritura,
+   para no pisarle el D: al DOS de un disco. */
+static void modo_basic(int si)
+{
+    Atari800_disable_basic = !si;
+    Devices_h_device_name = si ? 'D' : 'H';
+    Devices_h_read_only = !si;
+}
 static unsigned int rgba[SCR_W * SCR_H];   /* buffer que lee el canvas */
 
 EMSCRIPTEN_KEEPALIVE
@@ -48,7 +71,7 @@ int a8_init(void)
         "atari800",
         "-xlxe_rom", "/data/ATARIXL.ROM", "-xl-rev", "custom",
         "-osb_rom",  "/data/ATARIOSB.ROM", "-800-rev", "custom",
-        "-nobasic",
+        "-nobasic", "-basic-rev", "altirra",
         NULL,
     };
     int argc = (int) (sizeof(argv) / sizeof(argv[0])) - 1;
@@ -58,6 +81,11 @@ int a8_init(void)
     /* Sin esto, un BRK aborta la emulacion via longjmp y varios cargadores
        de disco se quedan colgados a mitad de carga. */
     libatari800_continue_emulation_on_brk(1);
+    mkdir(PROGRAMAS, 0777);
+    mkdir(EJEMPLOS, 0777);
+    strcpy(Devices_atari_h_dir[0], PROGRAMAS);
+    strcpy(Devices_atari_h_dir[1], EJEMPLOS);
+    modo_basic(FALSE);
     parches(FALSE, FALSE);              /* arranca en el SELF TEST: ROM intacta */
     Atari800_Coldstart();
     libatari800_clear_input_array(&input);
@@ -159,12 +187,9 @@ int a8_ram(void) { return MEMORY_ram_size; }
    Hay que soltar a mano lo que dejo el juego anterior. Un .xex deja abierto
    su fichero y la bandera que lo vuelve a inyectar en cada arranque; sin
    cerrarlos, "encender vacia" cargaba otra vez el ultimo programa. */
-EMSCRIPTEN_KEEPALIVE
-int a8_encender(int machine, int ram)
+static void suelta_todo(void)
 {
     int d;
-    if (!prepara(machine, ram))
-        return 0;
     if (BINLOAD_bin_file != NULL) {
         fclose(BINLOAD_bin_file);
         BINLOAD_bin_file = NULL;
@@ -176,11 +201,50 @@ int a8_encender(int machine, int ram)
     for (d = 1; d <= SIO_MAX_DRIVES; d++)
         SIO_Dismount(d);
     CARTRIDGE_Remove();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int a8_encender(int machine, int ram)
+{
+    if (!prepara(machine, ram))
+        return 0;
+    suelta_todo();
+    modo_basic(FALSE);
     parches(FALSE, FALSE);
     Atari800_Coldstart();
     libatari800_clear_input_array(&input);
     return 1;
 }
+
+/* La maquina elegida encendida en BASIC, sin nada puesto: READY. */
+EMSCRIPTEN_KEEPALIVE
+int a8_basic(int ram)
+{
+    if (!prepara(Atari800_MACHINE_XLXE, ram))
+        return 0;
+    suelta_todo();
+    modo_basic(TRUE);
+    /* El D: de los programas es un parche, y con el de SIO el sistema no se
+       queda tres segundos esperando arrancar de una disquetera vacia. */
+    parches(TRUE, TRUE);
+    Atari800_Coldstart();
+    libatari800_clear_input_array(&input);
+    return 1;
+}
+
+/* Las teclas que no estan en la matriz del teclado. La unica que hace falta
+   es BREAK (5), que detiene el programa que corre: en el Atari va por su
+   propia linea, no por el codigo de tecla. 0 la suelta. */
+EMSCRIPTEN_KEEPALIVE
+void a8_especial(int s) { input.special = (unsigned char) s; }
+
+/* Un byte de la memoria tal como la ve la CPU. La pagina escribe en el BASIC
+   tecla a tecla, y el Atari guarda una sola tecla pendiente (CH, $2FC): si
+   llega otra antes de que el sistema lea la anterior, la pisa. Mientras el
+   BASIC trabaja - un ENTER leyendo un listado, un programa que corre - no lee
+   el teclado, asi que la pagina mira CH y espera a que vuelva a $FF. */
+EMSCRIPTEN_KEEPALIVE
+int a8_peek(int addr) { return MEMORY_mem[addr & 0xffff]; }
 
 /* Cambia de juego en caliente: monta el fichero y arranca en frio.
    Devuelve el tipo de fichero detectado, o 0 si no se pudo abrir. */
@@ -193,6 +257,7 @@ int a8_load_tape(const char *path, int machine, int ram)
 {
     if (!prepara(machine, ram))
         return 0;
+    modo_basic(FALSE);
     parches(FALSE, TRUE);
     if (!CASSETTE_Insert(path))
         return 0;
@@ -212,6 +277,7 @@ int a8_load(const char *path, int machine, int ram)
     if (!prepara(machine, ram))
         return 0;
     CASSETTE_Remove();
+    modo_basic(FALSE);
     parches(TRUE, TRUE);             /* los discos si se benefician del parche */
     t = libatari800_reboot_with_file(path);
     libatari800_clear_input_array(&input);

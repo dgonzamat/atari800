@@ -29,6 +29,6 @@ emcc "$REPO/util/a8web.c" "$B/src/libatari800.a" \
   -I"$REPO/src" -I"$B/src" -O2 -o "$W/a8.js" \
   -sSINGLE_FILE=1 -sMODULARIZE=1 -sEXPORT_NAME=A8 -sALLOW_MEMORY_GROWTH=1 \
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS \
-  -sEXPORTED_FUNCTIONS=_a8_init,_a8_frame,_a8_pixels,_a8_input,_a8_frame_number,_a8_load,_a8_load_tape,_a8_ram,_a8_encender,_a8_tape_pos,_a8_tape_size,_a8_snd_freq,_a8_snd_channels,_a8_snd_ptr,_a8_snd_fill,_malloc \
+  -sEXPORTED_FUNCTIONS=_a8_init,_a8_frame,_a8_pixels,_a8_input,_a8_frame_number,_a8_load,_a8_load_tape,_a8_ram,_a8_encender,_a8_basic,_a8_especial,_a8_peek,_a8_tape_pos,_a8_tape_size,_a8_snd_freq,_a8_snd_channels,_a8_snd_ptr,_a8_snd_fill,_malloc \
   --embed-file "$W/romdata@/data"
 ls -l "$W/a8.js"

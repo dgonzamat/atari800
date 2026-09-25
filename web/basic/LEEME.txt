@@ -1,0 +1,12 @@
+Programas de revista del modo BASIC de la pagina.
+
+Estan en el formato del Atari: listados de texto con fin de linea $9B (ATASCII),
+listos para ENTER "D2:NOMBRE.LST". La pagina los pone en /ejemplos, que el
+BASIC ve como D2:. Todos se probaron en Altirra BASIC 1.59 sobre un XL.
+
+  ADIVINA   adivinar un numero del 1 al 100
+  TABLAS    tablas de multiplicar
+  NOMBRE    el nombre en letras de GRAPHICS 2
+  ARCOIRIS  rayas de GRAPHICS 7 con SETCOLOR
+  ESTRELLA  puntos al azar con PLOT
+  SIRENA    SOUND subiendo y bajando
