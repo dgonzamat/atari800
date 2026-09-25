@@ -48,3 +48,6 @@
 
 # VS Code
 /.vscode
+
+# la configuracion que el emulador se escribe solo al correrlo desde src/
+/src/.atari800.cfg

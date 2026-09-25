@@ -55,6 +55,9 @@ int CASSETTE_GetByte(void);
 /* Put a byte into the cas file.
    The block is being written at first putbyte of the subsequent block */
 void CASSETTE_PutByte(int byte);
+/* Report a change of the tape data line driven directly through SKCTL's
+   force-break bit. SPACE is TRUE when the line is held low. */
+void CASSETTE_TwoToneWrite(int space);
 /* Set motor status: 1 - on, 0 - off */
 void CASSETTE_TapeMotor(int onoff);
 /* Advance the tape by a scanline. Return TRUE if a new byte has been loaded

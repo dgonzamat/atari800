@@ -187,6 +187,16 @@ static double samp_pos;
 static int speaker;
 static int const CONSOLE_VOL = 32;
 
+/* A 410 does not only hand the computer a bit stream: its second track goes
+   out on the SIO audio line and straight into the TV, which is why a tape can
+   be heard loading. The signal is the same square wave POKEY is decoding, so
+   it rides on the console speaker's summing point rather than on a POKEY
+   channel. It gets sampled once per scan line, the rate at which the cassette
+   is stepped, so the ~5.3kHz mark tone comes out aliased - which is roughly
+   what the real thing sounds like through a TV speaker anyway. */
+int POKEYSND_tape_level = 0;
+static int const TAPE_VOL = 12;
+
 /*****************************************************************************/
 /* In my routines, I treat the sample output as another divide by N counter  */
 /* For better accuracy, the Samp_n_cnt has a fixed binary decimal point      */
@@ -1105,7 +1115,24 @@ void POKEYSND_UpdateConsol(int set)
 static void Update_consol_sound_rf(int set)
 {
 	if (set)
-		speaker = CONSOLE_VOL * GTIA_speaker;
+		speaker = CONSOLE_VOL * GTIA_speaker + TAPE_VOL * POKEYSND_tape_level;
 }
 #endif /* CONSOLE_SOUND */
+
+/* Called by the cassette whenever the level on the tape changes. It goes
+   round POKEYSND_UpdateConsol() on purpose: the console click and the tape
+   share a summing point, not a switch, so turning the click off must not
+   silence the tape as well. */
+void POKEYSND_UpdateTapeAudio(int level)
+{
+	if (level == POKEYSND_tape_level)
+		return;
+#ifdef CONSOLE_SOUND
+	Update_synchronized_sound();
+	POKEYSND_tape_level = level;
+	POKEYSND_UpdateConsol_ptr(TRUE);
+#else
+	POKEYSND_tape_level = level;
+#endif
+}
 

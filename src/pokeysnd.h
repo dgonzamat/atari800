@@ -88,6 +88,9 @@ extern int POKEYSND_enable_new_pokey;
 extern int POKEYSND_stereo_enabled;
 extern int POKEYSND_console_sound_enabled;
 extern int POKEYSND_bienias_fix;
+/* Current level on the tape's audio track, 0 or 1. The cassette owns it and
+   announces every change through POKEYSND_UpdateTapeAudio(). */
+extern int POKEYSND_tape_level;
 
 extern void (*POKEYSND_Process_ptr)(void *sndbuffer, int sndn);
 extern void (*POKEYSND_Update_ptr)(UWORD addr, UBYTE val, UBYTE chip, UBYTE gain);
@@ -101,6 +104,7 @@ int POKEYSND_Init(ULONG freq17, int playback_freq, UBYTE num_pokeys,
                      );
 void POKEYSND_Update(UWORD addr, UBYTE val, UBYTE /*chip*/, UBYTE gain);
 void POKEYSND_UpdateConsol(int set);
+void POKEYSND_UpdateTapeAudio(int level);
 
 /* Fill sndbuffer with sndn samples of audio. Number of bytes written to
    sndbuffer is sndn with 8-bit sound, and 2*sndn with 16-bit sound. sndn
