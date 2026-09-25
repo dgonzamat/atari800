@@ -13,6 +13,7 @@ import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -44,7 +45,21 @@ public class MainActivity extends Activity {
         /* el sonido lo arranca igual un toque en la pantalla: la pagina lo
            pide asi porque es lo que exigen los navegadores */
         s.setMediaPlaybackRequiresUserGesture(true);
-        web.setWebViewClient(new WebViewClient());
+        /* La aplicacion es la pagina: un enlace a otro sitio (los creditos de
+           las revistas) se abre en el navegador del telefono, no encima de
+           la aplicacion, que se perderia. */
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+                Uri u = r.getUrl();
+                String e = u.getScheme();
+                if ("http".equals(e) || "https".equals(e)) {
+                    try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception x) { }
+                    return true;
+                }
+                return false;
+            }
+        });
         /* Subir un programa: el <input type="file"> de la pagina abre el
            selector del telefono. Se piden todos los tipos porque .BAS y .LST
            no tienen tipo registrado y filtrando por ellos no saldria nada. */

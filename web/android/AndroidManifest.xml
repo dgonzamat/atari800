@@ -4,11 +4,13 @@
      No hace falta red: todo viaja en assets/atari.html. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.dgonzamat.atarixl"
-    android:versionCode="8"
-    android:versionName="8.0">
+    android:versionCode="9"
+    android:versionName="9.0">
 
     <!-- el disparo del mando tactil vibra, como el boton de verdad -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- el lector trae de archive.org las paginas de manuales y revistas -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:label="@string/app_name"
