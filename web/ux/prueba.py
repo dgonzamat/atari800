@@ -185,7 +185,7 @@ with sync_playwright() as p:
                  alto: document.documentElement.scrollHeight, foto: document.querySelector('.d1050').offsetHeight }; })()""")
     prueba("Tel: el aro de FUEGO cabe en la pantalla", m["fuegoDer"] <= m["ancho"], m["fuegoDer"])
     prueba("Tel: START de 44px y pegado al televisor", m["start"][1] >= 44 and m["start"][2] < 80, m["start"])
-    prueba("Tel: jugando cabe en <= 1,5 pantallas", m["alto"] <= 844 * 1.5, m["alto"])
+    prueba("Tel: jugando cabe en una pantalla, sin scroll", m["alto"] <= 844, m["alto"])
     prueba("Tel: jugando no se ve la foto del drive", m["foto"] == 0, m["foto"])
     barra = pg.evaluate("(() => { const b = [...document.querySelectorAll('.tv-barra button')].filter(x => x.offsetWidth).map(x => Math.round(x.getBoundingClientRect().top)); return new Set(b).size; })()")
     prueba("Tel: los interruptores del televisor en una fila", barra == 1, barra)
@@ -226,7 +226,22 @@ with sync_playwright() as p:
            pg.evaluate("document.body.dataset.paso") == "4"
            and pg.evaluate("document.body.classList.contains('mando-qs')"))
     m = pg.evaluate("document.documentElement.scrollHeight") / 844
-    prueba("Tel: estanteria de discos <= 8 pantallas", m <= 8, round(m, 1))
+    prueba("Tel: estanteria de discos <= 8,5 pantallas", m <= 8.5, round(m, 1))
+    # pantalla completa: nada pegado encima del juego y el televisor entero
+    pg.tap('.paso[data-ir="1"]'); pg.wait_for_timeout(300)
+    ancho = pg.evaluate("document.querySelector('.tv').getBoundingClientRect().width")
+    pg.tap('.paso[data-ir="4"]'); pg.wait_for_timeout(300)
+    prueba("Tel: el televisor no se achica en la estanteria",
+           abs(pg.evaluate("document.querySelector('.tv').getBoundingClientRect().width") - ancho) < 2)
+    pg.fill("#qDisk", "river raid"); pg.wait_for_timeout(300)
+    pg.tap("#gridDisk li:not([hidden]) button"); pg.wait_for_timeout(5000)
+    pg.evaluate("scrollTo(0,0)"); pg.tap("#bFull"); pg.wait_for_timeout(1200)
+    tapa = pg.evaluate("getComputedStyle(document.querySelector('.xl-tapa'), '::after').display")
+    pg.screenshot(path=OUT + "prueba_tel_completa.png")
+    prueba("Tel: pantalla completa sin rectangulo pegado", tapa == "none", tapa)
+    pg.tap("#bSalirInm"); pg.wait_for_timeout(600)
+    prueba("Tel: Salir vuelve de pantalla completa",
+           not pg.evaluate("document.body.classList.contains('inmersivo')"))
     prueba("Tel: sin errores de JS", not errs, errs[:3])
     ctx.close()
     nav.close()

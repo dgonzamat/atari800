@@ -577,14 +577,9 @@ body:not([data-paso="basic"]) .bas-linea{display:none !important}
 }
 
 /* --- Fase 5: el recorrido --------------------------------------------- */
-/* E15: eligiendo, el televisor es un recuadro; lo que se elige va arriba */
-body[data-paso="2"] .tv,body[data-paso="3"] .tv,body[data-paso="4"] .tv{max-width:min(100%,520px)}
+/* El televisor NO se achica en los pasos 2 a 4: se probo (E15) y se ve
+   como que la pantalla pierde tamano. Se queda entero en todos los pasos. */
 @media (max-width:700px){
-  body[data-paso="2"] .tv,body[data-paso="3"] .tv{max-width:62%}
-  body[data-paso="4"] .tv{max-width:50%}
-  body[data-paso="2"] .tv-barra,body[data-paso="3"] .tv-barra,body[data-paso="4"] .tv-barra{display:none}
-  body[data-paso="2"] .screen-bezel,body[data-paso="3"] .screen-bezel,
-  body[data-paso="4"] .screen-bezel{border-radius:14px/11px}
   /* la cinta y el disco, uno al lado del otro */
   body[data-paso="3"] .soportes{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
   body[data-paso="3"] .soporte .sigue{align-self:stretch;font-size:13px;letter-spacing:0;padding-left:6px;padding-right:6px}
@@ -596,6 +591,27 @@ body[data-paso="2"] .tv,body[data-paso="3"] .tv,body[data-paso="4"] .tv{max-widt
   .tv-barra button{font-size:14px;letter-spacing:0;padding:4px 7px;white-space:nowrap}
   body.touch .tv-barra button{padding:4px 7px}
   .tv-barra button[aria-pressed]::before{margin-right:5px}
+}
+/* A pantalla completa la tapa del XE queda sin su caja, y su canal gris
+   (el ::after donde va el modelo) se media contra la pantalla entera: un
+   rectangulo claro pegado encima del juego. Ahi no hay tapa que dibujar. */
+body.inmersivo .xl-tapa::before,body.inmersivo .xl-tapa::after{display:none !important}
+body.inmersivo .firma{display:none !important}
+/* Jugando en el telefono vertical todo cabe en UNA pantalla, sin scroll:
+   televisor, consola y mando. La firma, la regleta de estado y el rotulo
+   del drive se apartan (siguen con el teclado abierto), y el televisor se
+   ajusta al alto que queda solo si no alcanza. --resto es lo que ocupan
+   Volver, la barra del televisor, la consola, el mando y los margenes. */
+@media (max-width:700px) and (orientation:portrait){
+  body[data-paso="carga"]:not(.inmersivo):not(.tec-abierto) .firma,
+  body[data-paso="carga"]:not(.inmersivo):not(.tec-abierto) .statusbar,
+  body[data-paso="carga"]:not(.inmersivo):not(.tec-abierto) #etSoporte{display:none !important}
+  body[data-paso="carga"]:not(.inmersivo):not(.tec-abierto){--resto:352px}
+  body[data-paso="carga"][data-soporte="cas"]:not(.inmersivo):not(.tec-abierto){--resto:400px}
+  body[data-paso="carga"]:not(.inmersivo):not(.tec-abierto) .tv{
+    max-width:min(100%,calc((100svh - var(--resto)) * 1.4))}
+  body[data-paso="carga"]:not(.inmersivo) .volver{margin-top:0}
+  body[data-paso="carga"]:not(.inmersivo) .wrap{padding-bottom:10px}
 }
 @media (prefers-reduced-motion:reduce){.aviso-tv{transition:none}}
 """
