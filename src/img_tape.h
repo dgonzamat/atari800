@@ -61,6 +61,9 @@ void IMG_TAPE_WriteAdvance(IMG_TAPE_t *file, unsigned int duration);
    used for serial transmission.
    Returns TRUE on success or FALSE on write error. */
 int IMG_TAPE_WriteByte(IMG_TAPE_t *file, UBYTE byte, unsigned int pokey_counter);
+/* Records one transition of the tape's data line while a turbo recorder
+   drives it by hand. LEVEL is TRUE for SPACE, FALSE for MARK. */
+int IMG_TAPE_WriteTransition(IMG_TAPE_t *file, int level);
 
 /* Flushes the file's buffers. Any CAS chunk being currently written is
    immediately ended.

@@ -368,6 +368,14 @@ void POKEY_PutByte(UWORD addr, UBYTE byte)
 			irq_15khz_phase = (ANTIC_XPOS - 1 + 81) % ANTIC_LINE_C;
 		}
 #endif
+		/* Bit 7 forces a break: it holds the serial output line low. That
+		   is how a turbo recorder paints the sync tone the loader waits on,
+		   and its copy-protection pulses - by hand, with no byte and no
+		   baud rate involved (TurboSoft's own recorder alternates $8B and
+		   $0B here). Report the edge so the tape image can keep it as a
+		   raw pulse; nothing else would preserve it. */
+		if (((POKEY_SKCTL ^ byte) & 0x80) != 0)
+			CASSETTE_TwoToneWrite((byte & 0x80) != 0);
 		POKEY_SKCTL = byte;
 		POKEYSND_Update(POKEY_OFFSET_SKCTL, byte, 0, SOUND_GAIN);
 #ifdef NETSIO

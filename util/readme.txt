@@ -21,3 +21,6 @@ pokeybench.c: tests POKEY sound emulation
 atari/t7.*: tests cycle-exact timing
 
 build_m68k.sh: builds all Atari Falcon/FireBee variants
+
+xex2turbocas.py: makes a TurboSoft turbo cassette (.CAS) out of an Atari
+executable (.XEX), using a real TurboSoft tape as a model
