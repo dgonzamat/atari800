@@ -51,3 +51,7 @@
 
 # la configuracion que el emulador se escribe solo al correrlo desde src/
 /src/.atari800.cfg
+
+# los APK que arma web/android/construir.sh
+*.apk
+*.apk.idsig
