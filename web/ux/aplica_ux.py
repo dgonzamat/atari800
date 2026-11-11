@@ -122,6 +122,58 @@ rep("""      bFull.classList.remove("on");""",
     """      bFull.classList.remove("on");
       bFull.setAttribute("aria-pressed", "false");""")
 
+# Pantalla completa: el boton entra o sale segun lo que se ve (.inmersivo),
+# no segun la API, que en el modo solo-CSS (iOS, o al girar) no esta activa.
+rep("""    if (enPantallaCompleta()) {
+      if (document.exitFullscreen) document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    } else {""",
+    """    if (document.body.classList.contains("inmersivo")) {
+      if (enPantallaCompleta()) {
+        if (document.exitFullscreen) document.exitFullscreen();
+        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+      }
+    } else {""")
+rep("""  function avisaBarras(si) {""",
+    """  /* Girar el telefono mientras se juega es pedir la pantalla entera: en
+     apaisado el televisor quedaba chico en medio de la pagina gris. Entra
+     solo a pantalla completa (la de CSS, que no necesita un toque) y, si
+     entro asi, sale al volver a vertical. */
+  (function () {
+    if (!window.matchMedia) return;
+    var mq = window.matchMedia("(orientation: landscape)"), auto = false;
+    function ponInm(si) {
+      document.body.classList.toggle("inmersivo", si);
+      bFull.textContent = si ? "Salir" : "Pantalla completa";
+      bFull.classList.toggle("on", si);
+      bFull.setAttribute("aria-pressed", si ? "true" : "false");
+      if (si) pedirWakeLock(); else soltarWakeLock();
+      avisaBarras(si); medirBtns();
+    }
+    function mira() {
+      var b = document.body, inm = b.classList.contains("inmersivo");
+      var jugando = b.dataset.paso === "carga" && b.classList.contains("touch");
+      if (mq.matches && jugando && !inm) { auto = true; ponInm(true); }
+      else if (!mq.matches && auto && inm && !enPantallaCompleta()) { auto = false; ponInm(false); }
+      else if (!mq.matches) auto = false;
+    }
+    if (mq.addEventListener) mq.addEventListener("change", mira);
+    else if (mq.addListener) mq.addListener(mira);
+    /* si ya estaba en apaisado al empezar a jugar */
+    window.alEmpezarJuego = mira;
+  })();
+
+  function avisaBarras(si) {""")
+rep("""    function irACarga() {
+      etapa = 0;
+      document.body.dataset.paso = "carga";
+      pintarPasos(); pintarVolver();""",
+    """    function irACarga() {
+      etapa = 0;
+      document.body.dataset.paso = "carga";
+      pintarPasos(); pintarVolver();
+      if (window.alEmpezarJuego) window.alEmpezarJuego();""")
+
 # C11: al escribir un programa, la pantalla a la vista y un aviso
 rep("""    function orden(txt) { cola.push(-5); escribir(txt); }""",
     """    function orden(txt) { cola.push(-5); escribir(txt); avisaEscrito(); }
@@ -141,6 +193,30 @@ rep("""    function orden(txt) { cola.push(-5); escribir(txt); }""",
       clearTimeout(avisoT);
       avisoT = setTimeout(function () { a.classList.remove("ver"); }, 4500);
     }""")
+
+# Elegir en el telefono: al entrar a un paso, las fichas y el boton de
+# seguir quedan a la vista sin tener que bajar a buscarlos.
+rep("""      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function irACarga() {""",
+    """      alPaso(n);
+    }
+    /* En el telefono el televisor ocupa la primera media pantalla, y lo que
+       se elige quedaba debajo: habia que bajar a buscarlo. Se baja solo lo
+       justo para que se vea entero, sin pasarse del comienzo del paso. */
+    function alPaso(n) {
+      var id = { 1: "etMaquina", 2: "etJoystick", 3: "etSoporte" }[n];
+      var e = id && document.getElementById(id), y = 0;
+      if (e && document.body.dataset.listo && document.body.classList.contains("touch")) {
+        var r = e.getBoundingClientRect(), arriba = r.top + window.scrollY;
+        var fondo = r.bottom + window.scrollY;
+        if (fondo > window.innerHeight) y = Math.min(fondo - window.innerHeight + 6, arriba - 8);
+      }
+      window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
+    }
+
+    function irACarga() {""")
 
 # E14: pasos sin candado; joystick y drive se recuerdan
 rep("var etapa = 1, etapaMax = 1;", "var etapa = 1, etapaMax = 4;")
@@ -332,6 +408,15 @@ UX_JS = r"""
       ponVista(vg ? vg === "lista"
         : !!(window.matchMedia && window.matchMedia("(max-width:700px)").matches));
 
+      /* en el paso 3 la foto del aparato tambien lo elige */
+      [["#sopCinta .xc12", "cas"], ["#sopDisco .d1050", "disk"]].forEach(function (p) {
+        var f = document.querySelector(p[0]);
+        if (f) f.addEventListener("click", function (e) {
+          if (document.body.dataset.paso !== "3" || e.target.closest("button")) return;
+          resumeAudio(); elegirSoporte(p[1]);
+        });
+      });
+
       /* el mando, apagado o encendido segun lo que hay */
       var bPad = document.getElementById("bPad");
       if (bPad) {
@@ -349,6 +434,7 @@ rep("""    irAPaso(1);
     (function () {
       var sop = null;
       try { sop = localStorage.getItem("atari.soporte"); } catch (e) {}
+      document.body.dataset.listo = "1";
       if (sop === "cas" || sop === "disk") elegirSoporte(sop); else irAPaso(1);
     })();
     requestAnimationFrame(run);""")
@@ -596,6 +682,10 @@ body:not([data-paso="basic"]) .bas-linea{display:none !important}
    (el ::after donde va el modelo) se media contra la pantalla entera: un
    rectangulo claro pegado encima del juego. Ahi no hay tapa que dibujar. */
 body.inmersivo .xl-tapa::before,body.inmersivo .xl-tapa::after{display:none !important}
+/* y lo mismo las demas piezas de la carcasa: la puerta del cartucho del
+   800XL y del 600XL, la rejilla y la chapa. A pantalla completa solo
+   quedan la imagen, las teclas de consola y el mando. */
+body.inmersivo .xl-cartucho,body.inmersivo .xl-rejilla,body.inmersivo .xl-marca{display:none !important}
 body.inmersivo .firma{display:none !important}
 /* Jugando en el telefono vertical todo cabe en UNA pantalla, sin scroll:
    televisor, consola y mando. La firma, la regleta de estado y el rotulo
@@ -612,6 +702,29 @@ body.inmersivo .firma{display:none !important}
     max-width:min(100%,calc((100svh - var(--resto)) * 1.4))}
   body[data-paso="carga"]:not(.inmersivo) .volver{margin-top:0}
   body[data-paso="carga"]:not(.inmersivo) .wrap{padding-bottom:10px}
+}
+/* Elegir en el telefono: las fichas de a dos (los mandos de a tres), con
+   la foto arriba y el nombre debajo, y el boton de seguir pegado abajo de
+   la pantalla mientras se elige. En el paso 1 el teclado y la regleta se
+   apartan: la maquina se ve en su ficha. */
+@media (max-width:700px){
+  .mandos{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  #mandos{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .mandocard .caja{flex-direction:column;align-items:center;gap:6px;padding:9px 6px}
+  .mandocard .txt{align-items:center;text-align:center;width:100%}
+  .mandocard .txt .j-nota{display:none}
+  .mandocard .txt .j-marca{font-size:12px;letter-spacing:0;line-height:1.2}
+  .mandocard .txt em{font-size:10px;letter-spacing:.5px;line-height:1.3}
+  .mandocard .txt b{margin-top:1px;font-size:13px}
+  .mandocard .dib{width:64px;height:74px}
+  .maqcard .dib{width:100%;height:58px}
+  .maqcard .maqdib>span{width:100px;height:56px}
+  body[data-paso="1"] .xl,body[data-paso="1"] .statusbar{display:none !important}
+  .etapa-pie{position:sticky;bottom:0;z-index:12;margin:10px -6px 0;
+    padding:8px 6px calc(8px + env(safe-area-inset-bottom,0px));
+    background:rgba(242,242,240,.96);box-shadow:0 -8px 10px -10px rgba(0,0,0,.35)}
+  .etapa-pie .sigue{flex:1 1 auto;justify-content:center;text-align:center}
+  body[data-paso="3"] .xc12,body[data-paso="3"] .d1050{width:84%;margin-inline:auto;cursor:pointer}
 }
 @media (prefers-reduced-motion:reduce){.aviso-tv{transition:none}}
 """

@@ -242,7 +242,32 @@ with sync_playwright() as p:
     pg.tap("#bSalirInm"); pg.wait_for_timeout(600)
     prueba("Tel: Salir vuelve de pantalla completa",
            not pg.evaluate("document.body.classList.contains('inmersivo')"))
+    # girar jugando: entra solo a pantalla completa y sale al volver
+    pg.set_viewport_size({"width": 844, "height": 390}); pg.wait_for_timeout(800)
+    girado = pg.evaluate("document.body.classList.contains('inmersivo')")
+    tapado = pg.evaluate("""(() => { const c = document.querySelector('#scr').getBoundingClientRect(); let n = 0;
+        for (let i = 1; i < 8; i++) for (let j = 1; j < 6; j++) { const e = document.elementFromPoint(c.left + c.width*i/8, c.top + c.height*j/6);
+          if (e && !e.closest('.screen-bezel,#gamepad,.btns')) n++; } return n; })()""")
+    pg.set_viewport_size({"width": 390, "height": 844}); pg.wait_for_timeout(800)
+    prueba("Tel: girar jugando pone pantalla completa y nada la tapa", girado and tapado == 0, [girado, tapado])
+    prueba("Tel: volver a vertical sale de pantalla completa",
+           not pg.evaluate("document.body.classList.contains('inmersivo')"))
     prueba("Tel: sin errores de JS", not errs, errs[:3])
+    ctx.close()
+
+    # elegir en un telefono chico: fichas y boton de seguir a la vista
+    ctx = nav.new_context(viewport={"width": 360, "height": 640}, has_touch=True, is_mobile=True)
+    pg, errs = abre(ctx)
+    VE = """(sel) => { const v = e => { const r = e.getBoundingClientRect(); return r.top >= -1 && r.bottom <= innerHeight + 1 && r.height > 0; };
+        const s = [...document.querySelectorAll('.etapa .sigue')].filter(e => e.offsetParent);
+        return [...document.querySelectorAll(sel)].every(v) && s.length > 0 && s.every(v); }"""
+    pg.wait_for_timeout(800)
+    prueba("Tel 360x640: paso 1 con las 4 maquinas y el boton a la vista", pg.evaluate(VE, "#maquinas > *"))
+    pg.tap('.sigue[data-ir="2"]'); pg.wait_for_timeout(900)
+    prueba("Tel 360x640: paso 2 con los 3 mandos y el boton a la vista", pg.evaluate(VE, "#mandos > *"))
+    pg.tap('.sigue[data-ir="3"]'); pg.wait_for_timeout(900)
+    prueba("Tel 360x640: paso 3 con cinta, disco y botones a la vista", pg.evaluate(VE, "#etSoporte .soporte"))
+    prueba("Tel 360x640: sin errores de JS", not errs, errs[:3])
     ctx.close()
     nav.close()
 
