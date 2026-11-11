@@ -289,3 +289,22 @@ real.
   Subir `versionCode` y `versionName` en `web/android/AndroidManifest.xml` (hoy
   10 y 10.0).
 - El APK no lleva PDF; ahí el visor trae las páginas de archive.org.
+
+## 8. Resultado (ejecutado)
+
+Las cinco fases se aplicaron con `aplica_ux.py` sobre la pagina publicada
+(version 35 del artifact). `prueba.py` corre 47 pruebas de regresion y de
+las metas de este plan: 47 OK, 0 fallas, sin errores de JS.
+
+| Estado | Computador antes / despues | Telefono antes / despues |
+|---|---|---|
+| 1 Modelo | 2,0 / 2,0 | 1,7 / 1,8 |
+| 2 Joystick | 1,3 / 1,0 | 1,2 / 1,1 |
+| 3 Drive | 1,5 / 1,3 | 1,4 / 1,0 |
+| 4 Juego (discos) | 10,6 / 10,4 | 17,3 / 7,9 |
+| 4 Juego (cintas) | 11,6 / 11,4 | 23,6 / 7,7 |
+| Jugando | 2,4 / 2,4 | 1,4 / 1,0 |
+| BASIC | 14,7 / 1,2 (columna con scroll propio) | 31,4 / 2,8 (Revistas 5,9) |
+
+En el telefono ya no quedan blancos de toque de menos de 40px fuera del
+teclado del Atari (que ahora va plegado).
