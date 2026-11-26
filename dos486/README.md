@@ -65,6 +65,29 @@ Opciones: `RAM=16 ./run.sh`, `AUDIO=pa ./run.sh`, `CYCLES=max ./run-dosbox.sh`.
 Cambia la velocidad en DOSBox con `Ctrl+F11` / `Ctrl+F12`. Dentro de DOS,
 `JUEGOS` vuelve al menú.
 
+## Versión web (navegador)
+
+`web/build-web.sh` (después de `./build.sh`) genera `web/out/`: dos discos de 32 MB
+(C: FreeDOS + juegos, D: Duke Nukem 3D + Heretic) guardados como texto base64 de
+la imagen gzip, la configuración de DOSBox y el emulador (paquete npm `emulators`
+8.5.3, núcleo DOSBox-X en WebAssembly, verificado por SHA-256). La página
+`web/index.html` muestra un monitor y una caja 486: al pulsar POWER hace un POST de
+BIOS simulado mientras descarga los discos y luego arranca FreeDOS real desde el
+disco C:. Si el emulador no puede iniciar, ofrece un DOS simulado con comandos básicos.
+
+```bash
+web/build-web.sh
+```
+
+```bash
+cd web/out && python3 -m http.server 8000
+```
+
+Probado en Chromium (Playwright): menú de arranque de FreeDOS, menú de juegos,
+DOOM, Heretic, Wolfenstein 3D, Duke Nukem 3D y Duke Nukem II muestran imagen.
+El núcleo DOSBox clásico (`wdosbox`) no arranca el disco ("read error" en el MBR,
+causa probable: sin soporte de INT 13h extendida); por eso se usa DOSBox-X.
+
 ## Estado de pruebas
 
 Probado en este entorno (arranque y pantalla inicial de cada juego, sin jugar

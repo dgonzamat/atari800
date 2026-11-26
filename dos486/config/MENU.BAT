@@ -47,6 +47,7 @@ cd \GAMES\WOLF3D
 WOLF3D.EXE
 goto volver
 :duke3d
+%G2%
 cd \GAMES\DUKE3D
 DUKE3D.EXE
 goto volver
@@ -83,6 +84,7 @@ cd \GAMES\ZZT
 ZZT.EXE
 goto volver
 :heretic
+%G2%
 cd \GAMES\HERETIC
 HERETIC.EXE
 goto volver
@@ -96,6 +98,7 @@ EDIT.EXE
 goto volver
 
 :volver
+C:
 cd \
 goto menu
 
