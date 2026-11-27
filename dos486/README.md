@@ -137,6 +137,19 @@ módem y la línea `CONNECT` de la página son solo ambientación del marcado.
 Probado: el puente de fTelnet conectó con los cuatro BBS del directorio y devolvió
 sus pantallas de entrada reales.
 
+## App instalada desde Claude (conexión directa)
+
+El artefacto declara la capacidad `desktop` y el permiso `full-access`. Si se
+instala como app desde Claude de escritorio y la persona acepta ese permiso, el
+botón `BBS` abre la conexión telnet **directamente desde el PC** con un proceso
+pequeño (PowerShell en Windows, Python 3 en Mac/Linux) que pasa los bytes en
+líneas base64, sin pestaña ni puente de terceros. Probado el puente en Python
+contra Vertrauen (con la API de escritorio simulada); el de PowerShell **no se
+pudo probar** en el entorno de construcción.
+
+La barra tiene además **Pantalla completa** (en Chrome, Esc llega al juego y se
+mantiene presionado para salir) y **Reiniciar** (reinicio en frío del 486).
+
 ## App de escritorio (Electron)
 
 `desktop-app/` empaqueta la versión web como aplicación con su propia ventana
