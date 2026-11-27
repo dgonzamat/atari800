@@ -517,6 +517,7 @@ function modemSound() {
 /* La pagina no puede abrir conexiones telnet: el visor bloquea la red. La sesion real
    se abre en una pestana nueva con fTelnet (ftelnet.ca), un terminal web cuyo proxy
    publico convierte WebSocket en telnet. Lista de BBS segun lo conocido; pueden cambiar. */
+const APP_VERSION = 'v15';
 const BBS_LIST = [
   ['vert.synchro.net', 23, ''],
   ['bbs.fozztexx.com', 23, ''],
@@ -626,8 +627,10 @@ try {
 $o.WriteLine('C'); $o.Flush()
 try {
   $rb = New-Object byte[] 65536; $rs = New-Object 'ArraySegment[byte]' -ArgumentList @(,$rb); $rt = $ws.ReceiveAsync($rs, $ct)
-  $si = [Console]::OpenStandardInput(); $ib = New-Object byte[] 65536; $it = $si.ReadAsync($ib, 0, $ib.Length); $line = New-Object Text.StringBuilder
-  while ($ws.State -eq 'Open') {   # $it = $null cuando la entrada se cierra: se sigue recibiendo
+  $inPath = Join-Path $env:USERPROFILE '__INFILE__'
+  $fin = [IO.File]::Open($inPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+  $ib = New-Object byte[] 65536; $line = New-Object Text.StringBuilder
+  while ($ws.State -eq 'Open') {
     $busy = $false
     if ($rt.IsCompleted) {
       $r = $rt.GetAwaiter().GetResult()
@@ -635,9 +638,9 @@ try {
       if ($r.Count -gt 0) { $o.WriteLine('D' + [Convert]::ToBase64String($rb, 0, $r.Count)); $o.Flush() }
       $rt = $ws.ReceiveAsync($rs, $ct); $busy = $true
     }
-    if ($it -ne $null -and $it.IsCompleted) {
-      $n = 0; if (-not $it.IsFaulted) { $n = $it.Result }
-      if ($n -le 0) { $it = $null } else {
+    if ($fin.Length -gt $fin.Position) {
+      $n = $fin.Read($ib, 0, $ib.Length)
+      if ($n -gt 0) {
         [void]$line.Append([Text.Encoding]::ASCII.GetString($ib, 0, $n))
         $txt = $line.ToString(); $k = $txt.LastIndexOf([char]10)
         if ($k -ge 0) {
@@ -646,7 +649,7 @@ try {
             $ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Binary, $true, $ct).GetAwaiter().GetResult() } }
           [void]$line.Clear(); [void]$line.Append($txt.Substring($k + 1))
         }
-        $it = $si.ReadAsync($ib, 0, $ib.Length); $busy = $true
+        $busy = $true
       }
     }
     if (-not $busy) { Start-Sleep -Milliseconds 10 }
@@ -658,45 +661,48 @@ const PS_BRIDGE = String.raw`$ErrorActionPreference='Stop'
 try { $c = New-Object Net.Sockets.TcpClient; $c.NoDelay = $true; $c.Connect('__HOST__', __PORT__) } catch { [Console]::Out.WriteLine('E' + $_.Exception.Message); exit 1 }
 $s = $c.GetStream(); $o = [Console]::Out; $o.WriteLine('C'); $o.Flush()
 $buf = New-Object byte[] 65536
-$si = [Console]::OpenStandardInput(); $ib = New-Object byte[] 65536; $rt = $si.ReadAsync($ib, 0, $ib.Length); $line = New-Object Text.StringBuilder
+$inPath = Join-Path $env:USERPROFILE '__INFILE__'
+$fin = [IO.File]::Open($inPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+$ib = New-Object byte[] 65536; $line = New-Object Text.StringBuilder
 while ($true) {
   $busy = $false
   while ($s.DataAvailable) { $n = $s.Read($buf, 0, $buf.Length); if ($n -le 0) { break }; $o.WriteLine('D' + [Convert]::ToBase64String($buf, 0, $n)); $busy = $true }
   if ($busy) { $o.Flush() }
-  if ($rt -ne $null -and $rt.IsCompleted) {
-    $n = 0; if (-not $rt.IsFaulted) { $n = $rt.Result }
-    if ($n -le 0) { $rt = $null; continue }
+  if ($fin.Length -gt $fin.Position) {
+    $n = $fin.Read($ib, 0, $ib.Length)
     [void]$line.Append([Text.Encoding]::ASCII.GetString($ib, 0, $n))
     $txt = $line.ToString(); $k = $txt.LastIndexOf([char]10)
     if ($k -ge 0) {
       foreach ($l in $txt.Substring(0, $k).Split([char]10)) { $l = $l.Trim(); if ($l.Length -gt 0) { $b = [Convert]::FromBase64String($l); $s.Write($b, 0, $b.Length) } }
       [void]$line.Clear(); [void]$line.Append($txt.Substring($k + 1))
     }
-    $rt = $si.ReadAsync($ib, 0, $ib.Length); $busy = $true
+    $busy = $true
   }
   if ($c.Client.Poll(0, [Net.Sockets.SelectMode]::SelectRead) -and $c.Available -eq 0) { break }
   if (-not $busy) { Start-Sleep -Milliseconds 10 }
 }
 $o.WriteLine('X'); $o.Flush()`;
-const PY_BRIDGE = String.raw`import base64, select, socket, sys
+const PY_BRIDGE = String.raw`import base64, os, select, socket, sys, time
+inpath = os.path.join(os.path.expanduser('~'), '__INFILE__')
 try:
     s = socket.create_connection(('__HOST__', __PORT__), timeout=20); s.settimeout(None)
 except Exception as e:
     print('E' + str(e), flush=True); sys.exit(1)
 print('C', flush=True)
-srcs = [s, sys.stdin]
+fin = open(inpath, 'a+b'); fin.seek(0); buf = b''
 while True:
-    r, _, _ = select.select(srcs, [], [])
+    r, _, _ = select.select([s], [], [], 0.01)
     if s in r:
         d = s.recv(65536)
         if not d: break
         print('D' + base64.b64encode(d).decode(), flush=True)
-    if sys.stdin in r:
-        l = sys.stdin.readline()
-        if not l:
-            srcs = [s]; continue
-        l = l.strip()
-        if l: s.sendall(base64.b64decode(l))
+    chunk = fin.read()
+    if chunk:
+        buf += chunk
+        *lines, buf = buf.split(b'\n')
+        for l in lines:
+            l = l.strip()
+            if l: s.sendall(base64.b64decode(l))
 print('X', flush=True)`;
 let desktopApi = null;
 const desktopReady = (async () => {
@@ -712,9 +718,12 @@ function nativeConnect(host, port, handlers) {
   if (!/^[a-z0-9.-]+$/i.test(host) || !(port > 0 && port < 65536)) throw new Error('host o puerto invalido');
   const enc = (script) => { let u = ''; for (const ch of script) { const c = ch.charCodeAt(0); u += String.fromCharCode(c & 255, c >> 8); }   /* UTF-16LE */
     return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', btoa(u)]; };
-  const psWs = () => enc(PS_WS_BRIDGE.replace('__URL__', `wss://p-us-east.ftelnet.ca/${host}/${port}`));
-  const psTcp = () => enc(PS_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port)));
-  const py = () => ['-u', '-c', PY_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port))];
+  /* canal de entrada: archivo temporal en la carpeta del usuario (no depende de stdin) */
+  const inFile = `.dos486-bbs-${Date.now().toString(36)}.in`;
+  const psWs = () => enc(PS_WS_BRIDGE.replace('__URL__', `wss://p-us-east.ftelnet.ca/${host}/${port}`).replace('__INFILE__', inFile));
+  const psTcp = () => enc(PS_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port)).replace('__INFILE__', inFile));
+  const py = () => ['-u', '-c', PY_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port)).replace('__INFILE__', inFile)];
+  let outQ = Promise.resolve();
   /* intentos en orden; si uno falla antes de conectar, se prueba el siguiente y se guarda su error */
   const cands = desktopPlatform === 'win32'
     ? [['powershell.exe', psWs, 'PowerShell vía puerto 443'], ['powershell.exe', psTcp, 'PowerShell directo puerto ' + port],
@@ -727,18 +736,18 @@ function nativeConnect(host, port, handlers) {
     if (idx >= cands.length) { finish(errs.join(' | ') || 'no se encontro PowerShell ni Python'); return; }
     const [cmd, args, label] = cands[idx++];
     handlers.trying && handlers.trying(label);
-    let me;
+    let me, gotX = false, bytesIn = 0;
     try { me = desktopApi.childProcess.spawn(cmd, args()); } catch (e) { errs.push(label + ': ' + (e.message || e)); start(); return; }
     proc = me; let pending = '', stderr = '', failed = false;
-    const fail = (m) => { if (proc !== me || failed) return; failed = true; errs.push(label + ': ' + m.trim().slice(0, 160)); if (!opened) start(); else finish(m); };
+    const fail = (m) => { if (proc !== me || failed) return; failed = true; errs.push(label + ': ' + m.trim().slice(0, 200)); if (!opened) start(); else finish(errs.join(' | ')); };
     me.stdout.on('data', (chunk) => {
       if (proc !== me) return;
       pending += chunk; let i;
       while ((i = pending.indexOf('\n')) >= 0) {
         const line = pending.slice(0, i).replace(/\r$/, ''); pending = pending.slice(i + 1);
         if (line === 'C') { opened = true; handlers.open(); }
-        else if (line[0] === 'D') { const bin = atob(line.slice(1)); const out = new Array(bin.length); for (let k = 0; k < bin.length; k++) out[k] = bin.charCodeAt(k); handlers.data(out); }
-        else if (line === 'X') { if (opened) finish(''); }
+        else if (line[0] === 'D') { const bin = atob(line.slice(1)); bytesIn += bin.length; const out = new Array(bin.length); for (let k = 0; k < bin.length; k++) out[k] = bin.charCodeAt(k); handlers.data(out); }
+        else if (line === 'X') { gotX = true; if (opened) finish(errs.length ? errs.join(' | ') : (bytesIn ? '' : `${label}: el puente cerro sin recibir datos del BBS`)); }
         else if (line[0] === 'E') fail(line.slice(1));
       }
     });
@@ -746,14 +755,21 @@ function nativeConnect(host, port, handlers) {
     me.on('error', (e) => fail(String(e && e.message || e)));
     me.on('exit', (code) => {
       if (proc !== me) return;
-      if (opened) { finish(''); return; }
+      if (opened) {
+        setTimeout(() => {
+          if (done) return;
+          const why = (stderr.replace(/\s+/g, ' ').trim() || '') + ` (${label} termino con codigo ${code}${gotX ? '' : ', sin aviso de cierre'}; bytes recibidos: ${bytesIn})`;
+          finish(gotX && !stderr && code === 0 ? '' : why.trim());
+        }, 80);
+        return;
+      }
       setTimeout(() => fail(stderr.replace(/\s+/g, ' ') || ('el programa termino (codigo ' + code + ')')), 50);
     });
   };
-  start();
+  desktopApi.fs.writeFile('~/' + inFile, '').then(start, (e) => { errs.push('archivo de entrada: ' + (e.message || e)); finish(errs.join(' | ')); });
   return {
-    send: (s) => { if (proc) proc.stdin.write(b64enc(Array.from(s, c => c.charCodeAt(0) & 255)) + '\n').catch(() => {}); },
-    close: () => { const p0 = proc; finish(''); if (p0) p0.kill().catch(() => {}); },
+    send: (s) => { const line = b64enc(Array.from(s, c => c.charCodeAt(0) & 255)) + '\n'; outQ = outQ.then(() => desktopApi.fs.appendFile('~/' + inFile, line)).catch(() => {}); },
+    close: () => { const p0 = proc; finish(''); if (p0) p0.kill().catch(() => {}); setTimeout(() => desktopApi.fs.rm('~/' + inFile, { force: true }).catch(() => {}), 1500); },
   };
 }
 desktopReady.then(async () => {
@@ -846,7 +862,7 @@ async function typeAT(tok, s) {
 
 async function bbsSession(tok) {
   term.fg = 7; tClear();
-  await print('{15}TERMINAL{7}  -  COM1  57600 baudios  8N1  ANSI\n\n', tok, 3000);
+  await print(`{15}TERMINAL{7}  -  COM1  57600 baudios  8N1  ANSI   {8}(DOS 486 ${APP_VERSION}${desktopApi ? ', app: ' + (desktopPlatform || '?') : ''}){7}\n\n`, tok, 3000);
   await typeAT(tok, 'ATZ'); await print('OK\n\n', tok, 3000);
   let s = '{11}Directorio: BBS reales en linea (telnet por Internet, probados el 27-11-2026){7}\n\n';
   BBS_LIST.forEach(([h, p, d], i) => { s += `  {14}${i + 1}{7}. {15}${h.padEnd(28)}{8}puerto ${p}{7}\n`; });
