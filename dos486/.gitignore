@@ -1,0 +1,4 @@
+downloads/
+build/
+*.img
+web/out/

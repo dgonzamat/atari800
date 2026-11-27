@@ -1,0 +1,1321 @@
+<title>DOS 486</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<script type="application/json" id="claude-artifacts-manifest">{"permissions": ["full-access"]}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500&display=swap">
+<style>
+/* Layout: la pantalla de DOS arriba, a todo el ancho; debajo, los comandos listos para cargar cada programa.
+   Un solo look oscuro a proposito: es una pantalla de DOS. */
+:root {
+  --bg: #0d0e11;
+  --panel: #17191e;
+  --line: #2b2e36;
+  --ink: #e4e1d8;
+  --dim: #8f8c84;
+  --phosphor: #c7c7c7;
+  --key: #ffd75a;          /* amarillo de DOS para los comandos */
+  --f-crt: "VT323", "Courier New", monospace;
+  --f-body: "Inter", system-ui, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); }
+body {
+  color: var(--ink); font: 400 14px/1.5 var(--f-body);
+  padding-block: 16px 32px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+.screen { position: relative; width: 100%; aspect-ratio: 4 / 3; max-width: 100%; background: #000; border: 1px solid var(--line);
+  border-radius: 6px; overflow: hidden; outline: none; }
+.screen:focus-visible { border-color: var(--key); }
+.screen canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; display: block; }
+.text { position: absolute; inset: 0; margin: 0; padding: 4% 5%; color: var(--phosphor); font: 400 clamp(16px, 3.2vw, 26px)/1.15 var(--f-crt);
+  white-space: pre-wrap; overflow: hidden; }
+.text .err { color: #ff6b6b; }
+.text.term { padding: 2% 2%; line-height: 1.25; white-space: pre; font-family: "JetBrains Mono", ui-monospace, monospace; }
+#tcv { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); image-rendering: auto; }
+.cmds button[data-bbs] .c::before, .cmds a.hk .c::before { content: none; }
+.cmds a.hk { min-width: 0; text-decoration: none; background: var(--panel); color: var(--ink); border: 1px solid var(--key); border-radius: 6px;
+  padding: 8px 12px 9px; display: flex; flex-direction: column; gap: 2px; }
+.cmds a.hk .c { font: 400 24px/1 var(--f-crt); color: var(--key); }
+.cmds a.hk .t { font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
+.cmds a.hk:focus-visible { outline: 2px solid var(--key); outline-offset: 2px; }
+.text .w { color: #fff; } .text .c { color: #55ffff; }
+.off { position: absolute; inset: 0; display: grid; place-items: center; color: #55575e; font: 500 15px var(--f-body); text-align: center; padding: 16px; }
+.text .blink { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.bar { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.bar .status { color: var(--dim); min-width: 0; }
+.bar .left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hdd { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #3b2f12; box-shadow: inset 0 1px 1px rgba(0,0,0,.6); }
+.hdd.on { background: #ffb43a; box-shadow: 0 0 8px #ffb43a; }
+.pwr { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #14301b; }
+.pwr.on { background: #4cff6a; box-shadow: 0 0 8px #4cff6a; }
+.bar .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.screen:fullscreen { width: 100vw; height: 100vh; max-width: none; aspect-ratio: auto; border: 0; border-radius: 0; background: #000; }
+.screen:fullscreen canvas#cv { object-fit: contain; }
+.screen:fullscreen .hint { display: block; }
+.hint { display: none; position: absolute; right: 12px; bottom: 10px; font: 500 12px var(--f-body); color: #6b6d74; pointer-events: none; }
+.bar button#power { border-color: #4cff6a; color: #4cff6a; }
+.bar button[aria-pressed="true"] { color: var(--dim); }
+.bar button { font: 500 13px var(--f-body); color: var(--ink); background: none; border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+.bar button:hover { border-color: var(--dim); }
+
+.cmds { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.cmds button { min-width: 0; text-align: left; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 12px 9px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.cmds button .c { font: 400 24px/1 var(--f-crt); color: var(--key); letter-spacing: .02em; }
+.cmds button .c::before { content: "C:\\>"; color: var(--dim); margin-right: 2px; }
+.cmds button .t { font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
+.cmds button:hover:not(:disabled) { border-color: var(--key); }
+.cmds button:disabled { opacity: .45; cursor: default; }
+button:focus-visible { outline: 2px solid var(--key); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .text .blink { animation: none; } }
+@media (max-width: 480px) { .cmds { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cmds button .c { font-size: 21px; } }
+</style>
+
+<main class="wrap">
+  <div class="screen" id="screen" tabindex="0" aria-label="Pantalla de DOS">
+    <canvas id="cv" width="720" height="400" hidden></canvas>
+    <pre class="text" id="txt" hidden></pre>
+    <canvas id="tcv" hidden></canvas>
+    <div class="off" id="off">Pulsa Encender</div>
+    <div class="hint" id="hint">Mantén Esc para salir de pantalla completa</div>
+    <input id="mkb" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Teclado para el BBS" style="position:absolute;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;padding:0">
+  </div>
+
+  <div class="bar">
+    <span class="left"><i class="pwr" id="pwr" title="Encendido"></i><i class="hdd" id="hdd" title="Disco duro"></i><span class="status" id="status">Apagado</span></span>
+    <span class="acts"><button id="snd" type="button" aria-pressed="false">Sonido: sí</button><button id="full" type="button">Pantalla completa</button><button id="reset" type="button">Reiniciar</button><button id="power" type="button">Encender</button></span>
+  </div>
+
+  <div class="cmds" id="cmds"></div>
+</main>
+
+<script src="emulators/emulators.js"></script>
+<script>
+(() => {
+const CMDS = [
+  ['DOOM', 'DOOM 1.9 (1993)'], ['WOLF3D', 'Wolfenstein 3D (1992)'], ['DUKE3D', 'Duke Nukem 3D (1996)'], ['DUKE2', 'Duke Nukem II (1993)'],
+  ['HERETIC', 'Heretic (1994)'], ['KEEN1', 'Commander Keen 1 (1990)'], ['KEEN4', 'Commander Keen 4 (1991)'], ['DAVE', 'Dangerous Dave (1990)'],
+  ['SCORCH', 'Scorched Earth (1991)'], ['PINBALL', 'Epic Pinball (1993)'], ['SKYROADS', 'SkyRoads (1993)'], ['ZZT', 'ZZT (1991)'],
+  ['LEMMINGS', 'Lemmings demo (1991)'], ['PRINCE', 'Prince of Persia demo (1990)'], ['STUNTS', 'Stunts demo (1990)'], ['CARMA', 'Carmageddon demo (1997)'], ['ANOTHER', 'Another World demo (1991)'], ['TP', 'Turbo Pascal 5.5 (1989)'], ['EDIT', 'Editor de texto'], ['BBS', 'BBS reales por Internet'],
+];
+const $ = (id) => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d'), txt = $('txt'), screenEl = $('screen'), statusEl = $('status');
+let ci = null, bundle = null, ready = false, typing = false, session = 0;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+$('cmds').innerHTML = CMDS.map(([c, t]) => `<button type="button" data-cmd="${c}" disabled><span class="c">${c}</span><span class="t">${t}</span></button>`).join('');
+const setEnabled = (v) => document.querySelectorAll('#cmds button').forEach(b => { b.disabled = !v; });
+const say = (html) => { txt.innerHTML = html; };
+
+/* ---------- carga de discos ---------- */
+async function fetchWithProgress(url, onp) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + ': HTTP ' + r.status);
+  const total = +r.headers.get('content-length') || 0;
+  if (!r.body || !total) { const b = new Uint8Array(await r.arrayBuffer()); onp(1); return b; }
+  const rd = r.body.getReader(); const parts = []; let got = 0;
+  for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); got += value.length; onp(got / total); }
+  const out = new Uint8Array(got); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out;
+}
+/* Cada disco llega como texto base64 de la imagen comprimida con gzip */
+async function unpack(b64bytes) {
+  const bin = atob(new TextDecoder().decode(b64bytes).trim());
+  const gz = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) gz[i] = bin.charCodeAt(i);
+  const stream = new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+/* Paquete para el emulador: zip sin compresion armado aqui mismo */
+const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(d) { let c = 0xFFFFFFFF; for (let i = 0; i < d.length; i++) c = CRC[(c ^ d[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function storeZip(entries) {
+  const enc = new TextEncoder(), locals = [], cds = []; let off = 0;
+  for (const [name, data] of entries) {
+    const n = enc.encode(name), crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(12, 0x21, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, n.length, true);
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true); cd.setUint16(4, 20, true); cd.setUint16(6, 20, true); cd.setUint16(14, 0x21, true);
+    cd.setUint32(16, crc, true); cd.setUint32(20, data.length, true); cd.setUint32(24, data.length, true); cd.setUint16(28, n.length, true);
+    cd.setUint32(42, off, true);
+    locals.push(new Uint8Array(lh.buffer), n, data); cds.push(new Uint8Array(cd.buffer), n);
+    off += 30 + n.length + data.length;
+  }
+  const cdSize = cds.reduce((a, b) => a + b.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, off, true);
+  const parts = [...locals, ...cds, new Uint8Array(end.buffer)];
+  const out = new Uint8Array(parts.reduce((a, b) => a + b.length, 0)); let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+async function loadDisks(onp) {
+  let pc = 0, pd = 0;
+  const show = () => onp((pc + pd) / 2);
+  const manifest = await (await fetch('disks.json')).json();
+  const getDisk = async (parts, set) => {
+    const done = new Array(parts.length).fill(0);
+    const chunks = await Promise.all(parts.map((u, i) => fetchWithProgress(u, q => { done[i] = q; set(done.reduce((a, b) => a + b, 0) / parts.length); })));
+    const all = new Uint8Array(chunks.reduce((a, b) => a + b.length, 0)); let o = 0;
+    for (const c of chunks) { all.set(c, o); o += c.length; }
+    return all;
+  };
+  const raw = await Promise.all([getDisk(manifest.c, p => { pc = p; show(); }), getDisk(manifest.d, p => { pd = p; show(); })]);
+  const disks = await Promise.all(raw.map(unpack));
+  const conf = await (await fetch('dosbox.conf.txt')).text();
+  return storeZip([['.jsdos/dosbox.conf', new TextEncoder().encode(conf)], ['c.img', disks[0]], ['d.img', disks[1]]]);
+}
+
+/* ---------- DOS listo: FDAUTO.BAT dibuja una barra solida al terminar ---------- */
+function hasReadyBar(data, w, h) {
+  const rowH = h / 25;
+  for (let r = 0; r < 25; r++) {
+    const y = Math.floor(r * rowH + rowH / 2); let lit = 0, n = 0;
+    for (let x = 8; x < w - 16; x += 4) { const i = (y * w + x) * 4; n++; if (data[i] + data[i + 1] + data[i + 2] > 120) lit++; }
+    if (lit / n > 0.9) return true;
+  }
+  return false;
+}
+function markReady(id) {
+  if (ready || id !== session) return;
+  ready = true; setEnabled(true); statusEl.textContent = 'Listo. Un clic escribe el comando en DOS; sal del programa abierto antes de cargar otro.';
+}
+
+/* ---------- sonidos del 486 (sintetizados, no son grabaciones) ---------- */
+let audio = null, master = null, nextT = 0, soundOn = true, hum = [];
+const hddLed = $('hdd');
+function ensureAudio() {
+  if (!audio) {
+    try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { audio = null; return; }
+    master = audio.createGain(); master.gain.value = soundOn ? 1 : 0; master.connect(audio.destination);
+  }
+  if (audio.state === 'suspended') audio.resume().catch(() => {});
+}
+function noiseBuffer(sec) {
+  const b = audio.createBuffer(1, Math.floor(audio.sampleRate * sec), audio.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+}
+function env(g, t, peak, a, d) { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + a + d); }
+function thump(t, f, dur, peak) {
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * 0.5, t + dur);
+  env(g, t, peak, 0.004, dur); o.connect(g).connect(master); o.start(t); o.stop(t + dur + 0.05);
+}
+function click(t, freq, dur, peak) {
+  const n = audio.createBufferSource(); n.buffer = noiseBuffer(dur + 0.02);
+  const f = audio.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = 1.4;
+  const g = audio.createGain(); env(g, t, peak, 0.001, dur);
+  n.connect(f).connect(g).connect(master); n.start(t); n.stop(t + dur + 0.03);
+}
+const SFX = {
+  powerOn() {   /* rele de la fuente, ventilador y disco duro acelerando */
+    if (!audio) return; const t = audio.currentTime + 0.02;
+    thump(t, 60, 0.22, 0.5); click(t, 900, 0.03, 0.25);
+    const fan = audio.createBufferSource(); fan.buffer = noiseBuffer(2); fan.loop = true;
+    const lp = audio.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 420; lp.Q.value = 0.6;
+    const fg = audio.createGain(); fg.gain.setValueAtTime(0.0001, t); fg.gain.exponentialRampToValueAtTime(0.06, t + 1.4);
+    fan.connect(lp).connect(fg).connect(master); fan.start(t);
+    const hm = audio.createOscillator(); hm.type = 'triangle'; hm.frequency.value = 100;
+    const hg = audio.createGain(); hg.gain.setValueAtTime(0.0001, t); hg.gain.exponentialRampToValueAtTime(0.008, t + 1);
+    hm.connect(hg).connect(master); hm.start(t);
+    const sp = audio.createOscillator(); sp.type = 'sawtooth';
+    sp.frequency.setValueAtTime(25, t + 0.3); sp.frequency.exponentialRampToValueAtTime(90, t + 3.6);
+    const bp = audio.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.setValueAtTime(300, t); bp.frequency.exponentialRampToValueAtTime(1800, t + 3.6); bp.Q.value = 3;
+    const sg = audio.createGain(); sg.gain.setValueAtTime(0.0001, t + 0.3); sg.gain.exponentialRampToValueAtTime(0.05, t + 2.2); sg.gain.exponentialRampToValueAtTime(0.01, t + 4.5);
+    sp.connect(bp).connect(sg).connect(master); sp.start(t + 0.3);
+    hum = [[fan, fg], [hm, hg], [sp, sg]];
+  },
+  powerOff() {
+    if (!audio) return; const t = audio.currentTime;
+    for (const [src, g] of hum) { g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(Math.max(g.gain.value, 0.0001), t); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2); src.stop(t + 1.3); }
+    hum = []; thump(t, 50, 0.15, 0.3);
+  },
+  floppy() {    /* disquetera A: — motor y pasos del cabezal ("grrr-grrr") */
+    if (!audio) return; let t = audio.currentTime + 0.02;
+    const m = audio.createBufferSource(); m.buffer = noiseBuffer(1.3);
+    const ml = audio.createBiquadFilter(); ml.type = 'lowpass'; ml.frequency.value = 260;
+    const mg = audio.createGain(); env(mg, t, 0.07, 0.05, 1.2); m.connect(ml).connect(mg).connect(master); m.start(t);
+    thump(t, 140, 0.05, 0.25);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < 38; i++) { click(t, 1100 + (pass ? 200 : 0), 0.004, 0.16); t += 0.0062; }
+      t += 0.13;
+    }
+    thump(t, 120, 0.05, 0.2);
+  },
+  key(down) {   /* teclado mecanico */
+    if (!audio) return; const t = audio.currentTime + 0.005;
+    click(t, down ? 3400 : 2300, 0.006, down ? 0.2 : 0.08); thump(t, down ? 240 : 170, 0.018, down ? 0.07 : 0.03);
+  },
+  degauss() {   /* monitor CRT: "bwoom" de desmagnetizacion */
+    if (!audio) return; const t = audio.currentTime + 0.05;
+    const o = audio.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 60;
+    const f = audio.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 500;
+    const g = audio.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.22, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.1);
+    o.connect(f).connect(g).connect(master); o.start(t); o.stop(t + 1.2); thump(t, 45, 0.12, 0.35);
+  },
+  beep() {      /* beep del POST por el altavoz del PC */
+    if (!audio) return; const t = audio.currentTime + 0.02;
+    const o = audio.createOscillator(); o.type = 'square'; o.frequency.value = 990;
+    const g = audio.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 0.005);
+    g.gain.setValueAtTime(0.06, t + 0.16); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+    o.connect(g).connect(master); o.start(t); o.stop(t + 0.2);
+  },
+  chatter(seconds) {   /* cabezal del disco duro buscando, con su LED */
+    if (!audio) return; const t0 = audio.currentTime; let t = t0 + 0.02;
+    while (t < t0 + seconds) {
+      if (Math.random() < 0.85) { click(t, 2600 + Math.random() * 1400, 0.012, 0.22 + Math.random() * 0.15); thump(t, 170, 0.025, 0.08); }
+      const ms = (t - t0) * 1000; setTimeout(() => { hddLed.classList.add('on'); setTimeout(() => hddLed.classList.remove('on'), 45); }, ms);
+      t += 0.025 + Math.random() * (Math.random() < 0.2 ? 0.35 : 0.09);
+    }
+  },
+};
+function pushSound(samples) {
+  if (!audio || audio.state !== 'running' || !ci) return;
+  const now = audio.currentTime;
+  if (nextT < now + 0.02) nextT = now + 0.05;
+  if (nextT - now > 0.35) return;
+  const buf = audio.createBuffer(1, samples.length, ci.soundFrequency() || 44100); buf.copyToChannel(samples, 0);
+  const src = audio.createBufferSource(); src.buffer = buf; src.connect(master); src.start(nextT);
+  nextT += buf.duration;
+}
+$('snd').addEventListener('click', () => {
+  soundOn = !soundOn; $('snd').textContent = soundOn ? 'Sonido: sí' : 'Sonido: no'; $('snd').setAttribute('aria-pressed', String(!soundOn));
+  if (master) master.gain.value = soundOn ? 1 : 0;
+});
+
+/* ---------- discos: se descargan en cuanto abre la pagina ---------- */
+let diskPct = 0, diskErr = null;
+const diskPromise = loadDisks(p => { diskPct = p; }).then(b => (bundle = b), e => { diskErr = e; throw e; });
+diskPromise.catch(() => {});
+
+/* ---------- espera de discos: pantalla sin senal hasta que arranca la maquina ---------- */
+async function waitDisks(id) {
+  txt.hidden = true; cv.hidden = true; $('off').hidden = true;
+  while (!bundle && !diskErr) {
+    if (id !== session) return false;
+    statusEl.textContent = 'Cargando discos… ' + Math.round(diskPct * 100) + ' %';
+    SFX.chatter(0.6); await sleep(600);
+  }
+  if (diskErr) throw diskErr;
+  return true;
+}
+
+/* ---------- arranque ---------- */
+let on = false;
+async function boot() {
+  const id = ++session; ready = false; setEnabled(false);
+  try {
+    const ok = await waitDisks(id); if (!ok || id !== session) return;
+    statusEl.textContent = 'BIOS del emulador (DOSBox-X) y arranque de FreeDOS…';
+    if (!window.emulators) throw new Error('no se cargó el emulador');
+    emulators.pathPrefix = 'emulators/';
+    const c = await emulators.dosboxXWorker([bundle]);
+    if (id !== session) { c.exit().catch(() => {}); return; }
+    ci = c;
+    setTimeout(() => { if (id === session) SFX.floppy(); }, 400);   /* la BIOS revisa la disquetera */
+    const bootChatter = setInterval(() => { if (!ready && id === session) SFX.chatter(0.9); else clearInterval(bootChatter); }, 900);
+    SFX.chatter(0.9);
+    let shown = false; const t0 = performance.now();
+    ci.events().onFrame((rgb, rgba) => {
+      if (id !== session || !ci) return;
+      const w = ci.width(), h = ci.height(); if (!w || !h) return;
+      if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+      let data = rgba;
+      if (!data && rgb) { data = new Uint8ClampedArray(w * h * 4);
+        for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { data[j] = rgb[i]; data[j + 1] = rgb[i + 1]; data[j + 2] = rgb[i + 2]; data[j + 3] = 255; } }
+      if (!data || data.length < w * h * 4) return;
+      ctx.putImageData(new ImageData(new Uint8ClampedArray(data.buffer, data.byteOffset, w * h * 4), w, h), 0, 0);
+      if (!shown) { shown = true; cv.hidden = false; txt.hidden = true; }
+      if (!ready && h === 400 && hasReadyBar(data, w, h)) setTimeout(() => markReady(id), 500);
+    });
+    ci.events().onSoundPush(pushSound);
+    setTimeout(() => markReady(id), 40000);   /* por si no se detecta la barra */
+  } catch (err) {
+    if (id !== session) return;
+    cv.hidden = true; txt.hidden = false;
+    say('<span class="err">No se pudo iniciar DOS en este navegador.</span>\n' + String(err && err.message || err).replace(/[&<]/g, c => c === '&' ? '&amp;' : '&lt;'));
+    statusEl.textContent = 'Error al iniciar.';
+  }
+}
+async function shutdown() {
+  session++; ready = false; setEnabled(false);
+  const c = ci; ci = null; if (c) { try { await c.exit(); } catch (_) {} }
+  cv.hidden = true;
+}
+$('power').addEventListener('click', async () => {
+  ensureAudio();
+  if (!on) {
+    on = true; $('pwr').classList.add('on'); $('power').textContent = 'Apagar'; $('off').hidden = true;
+    SFX.powerOn(); setTimeout(() => SFX.degauss(), 350); boot();
+  } else {
+    on = false; bbsEnd(); await shutdown(); SFX.powerOff();
+    $('pwr').classList.remove('on'); $('power').textContent = 'Encender';
+    txt.hidden = true; $('off').hidden = false; statusEl.textContent = 'Apagado';
+  }
+});
+
+/* ======================================================================
+   Terminal de BBS: marca y abre una sesion real con fTelnet (pestana nueva).
+   ====================================================================== */
+const PAL = ['#000000', '#0000aa', '#00aa00', '#00aaaa', '#aa0000', '#aa00aa', '#aa5500', '#aaaaaa',
+             '#555555', '#5555ff', '#55ff55', '#55ffff', '#ff5555', '#ff55ff', '#ffff55', '#ffffff'];
+const COLS = 80, ROWS = 25;
+const term = { rows: [], x: 0, y: 0, fg: 7, bg: 0, cps: 1440 };
+let bbsActive = false, bbsToken = 0, keyWaiter = null, savedCmds = null;
+class BbsAbort extends Error {}
+const check = (tok) => { if (!bbsActive || tok !== bbsToken) throw new BbsAbort(); };
+
+const tcv = $('tcv'), tctx = tcv.getContext('2d');
+let cellW = 8, cellH = 16;
+function fitTerm() {
+  const w = screenEl.clientWidth * 0.97, h = screenEl.clientHeight * 0.97;
+  cellW = Math.max(4, Math.floor(w / COLS)); cellH = Math.max(8, Math.floor(Math.min(h / ROWS, cellW * 2.1)));
+  const dpr = window.devicePixelRatio || 1;
+  tcv.width = COLS * cellW * dpr; tcv.height = ROWS * cellH * dpr;
+  tcv.style.width = COLS * cellW + 'px'; tcv.style.height = ROWS * cellH + 'px';
+  tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (bbsActive) tRender();
+}
+addEventListener('resize', () => { if (bbsActive) fitTerm(); });
+function tClear() { term.rows = Array.from({ length: ROWS }, () => []); term.x = 0; term.y = 0; tRender(); }
+function tPut(ch) {
+  if (ch === '\n') { term.x = 0; term.y++; }
+  else {
+    if (term.x >= COLS) { term.x = 0; term.y++; }
+    if (term.y >= ROWS) { term.rows.shift(); term.rows.push([]); term.y = ROWS - 1; }
+    term.rows[term.y][term.x] = [ch, term.fg, term.bg]; term.x++;
+  }
+  if (term.y >= ROWS) { term.rows.shift(); term.rows.push([]); term.y = ROWS - 1; }
+}
+function tBack() { if (term.x > 0) { term.x--; term.rows[term.y][term.x] = undefined; } }
+const escH = (c) => c === '<' ? '&lt;' : c === '&' ? '&amp;' : c === '>' ? '&gt;' : c;
+const shadeCache = new Map();
+function shadePattern(ch, f, b) {   /* sombreados CP437 como patron de puntos 4x4 */
+  const key = ch + f + ',' + b; if (shadeCache.has(key)) return shadeCache.get(key);
+  const c = document.createElement('canvas'); c.width = 4; c.height = 4; const g = c.getContext('2d');
+  g.fillStyle = PAL[b]; g.fillRect(0, 0, 4, 4); g.fillStyle = PAL[f];
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
+    const on = ch === '░' ? (x + 2 * y) % 4 === 0 : ch === '▒' ? (x + y) % 2 === 0 : (x + 2 * y) % 4 !== 0;
+    if (on) g.fillRect(x, y, 1, 1);
+  }
+  const pat = tctx.createPattern(c, 'repeat'); shadeCache.set(key, pat); return pat;
+}
+function tRender() {
+  const fs = Math.min(cellW / 0.6, cellH * 0.82);
+  tctx.fillStyle = PAL[0]; tctx.fillRect(0, 0, COLS * cellW, ROWS * cellH);
+  tctx.font = `${fs}px "JetBrains Mono", ui-monospace, monospace`; tctx.textBaseline = 'middle'; tctx.textAlign = 'center';
+  for (let y = 0; y < ROWS; y++) {
+    const row = term.rows[y] || [];
+    for (let x = 0; x < COLS; x++) {
+      const c = row[x]; if (!c) continue;
+      const [ch, f, b] = c, X = x * cellW, Y = y * cellH;
+      if (b) { tctx.fillStyle = PAL[b]; tctx.fillRect(X, Y, cellW, cellH); }
+      if (ch === ' ' || ch === '\u00a0') continue;
+      tctx.fillStyle = PAL[f];
+      switch (ch) {   /* bloques: rectangulos exactos, sin huecos entre celdas */
+        case '█': tctx.fillRect(X, Y, cellW, cellH); break;
+        case '▀': tctx.fillRect(X, Y, cellW, Math.ceil(cellH / 2)); break;
+        case '▄': tctx.fillRect(X, Y + Math.floor(cellH / 2), cellW, Math.ceil(cellH / 2)); break;
+        case '▌': tctx.fillRect(X, Y, Math.ceil(cellW / 2), cellH); break;
+        case '▐': tctx.fillRect(X + Math.floor(cellW / 2), Y, Math.ceil(cellW / 2), cellH); break;
+        case '░': case '▒': case '▓': tctx.fillStyle = shadePattern(ch, f, b || 0); tctx.fillRect(X, Y, cellW, cellH); break;
+        default: tctx.fillText(ch, X + cellW / 2, Y + cellH / 2 + 1);
+      }
+    }
+  }
+  tctx.fillStyle = PAL[7]; tctx.fillRect(term.x * cellW, term.y * cellH + cellH - 2, cellW, 2);   /* cursor */
+}
+/* Escribe texto con codigos {n} de color (0-15) y {cls}, a la velocidad del modem */
+async function print(s, tok, cps) {
+  const speed = cps || term.cps; const items = [];
+  s.replace(/\{(cls|b?\d{1,2})\}|([\s\S])/g, (m, code, ch) => { items.push(code !== undefined ? { code } : { ch }); return ''; });
+  let i = 0, last = performance.now(), carry = 0;
+  while (i < items.length) {
+    check(tok);
+    await new Promise(r => requestAnimationFrame(r));
+    const now = performance.now(); carry += (now - last) / 1000 * speed; last = now;
+    let n = Math.floor(carry); carry -= n; if (n < 1) continue;
+    while (n > 0 && i < items.length) {
+      const it = items[i++];
+      if (it.code === 'cls') tClear(); else if (it.code !== undefined) { if (it.code[0] === 'b') term.bg = +it.code.slice(1); else term.fg = +it.code; } else { tPut(it.ch); n--; }
+    }
+    tRender();
+  }
+}
+const vis = (s) => s.replace(/\{(cls|b?\d{1,2})\}/g, '');
+function box(title, lines, w, c = 9) {
+  const top = `{${c}}╔${'═'.repeat(Math.floor((w - 2 - vis(title).length - 2) / 2))} {15}${title}{${c}} ${'═'.repeat(Math.ceil((w - 2 - vis(title).length - 2) / 2))}╗\n`;
+  const body = lines.map(l => `{${c}}║{7}${l}${' '.repeat(Math.max(0, w - 2 - vis(l).length))}{${c}}║\n`).join('');
+  return top + body + `{${c}}╚${'═'.repeat(w - 2)}╝{7}\n`;
+}
+
+/* ---------- teclas: teclado fisico o botones de abajo ---------- */
+function setHotkeys(list) {
+  $('cmds').innerHTML = list.map(([k, label, href]) => href
+    ? `<a class="hk" href="${href}" target="_blank" rel="noopener" data-bbs="${k}"><span class="c">${k}</span><span class="t">${label} ↗</span></a>`
+    : `<button type="button" data-bbs="${k === '\r' ? 'ENTER' : k}"><span class="c">${({ '\r': '⏎', ENTER: '⏎', ESC: 'Esc', SPC: '␣', HANG: '☎', KB: '⌨' })[k] || k}</span><span class="t">${label}</span></button>`).join('');
+}
+function feedKey(k, fromLink) {
+  if (!keyWaiter) return;
+  const w = keyWaiter;
+  if (w.linkOnly && !/^[vVcCdD]$/.test(k) && !fromLink) return;   /* un BBS por telnet solo se elige con su enlace */
+  if (w.line) {
+    if (k === '\r') { keyWaiter = null; tPut('\n'); tRender(); w.resolve(w.buf); return; }
+    if (k === '\b') { if (w.buf) { w.buf = w.buf.slice(0, -1); tBack(); tRender(); } return; }
+    if (k.length === 1 && k >= ' ' && w.buf.length < w.max) { w.buf += k; tPut(k); tRender(); }
+    return;
+  }
+  const up = k.toUpperCase();
+  if (!w.allowed || w.allowed.includes(up)) { keyWaiter = null; w.resolve(up); }
+}
+function getKey(tok, allowed, hot) { check(tok); if (hot) setHotkeys(hot); return new Promise(r => { keyWaiter = { resolve: r, allowed }; }); }
+function getLine(tok, max, hot) { check(tok); setHotkeys(hot || [['\r', 'Enter']]); return new Promise(r => { keyWaiter = { resolve: r, line: true, buf: '', max }; }); }
+const anyKey = (tok) => getKey(tok, null, [['\r', 'Continuar']]);
+
+/* ---------- sonido del modem (sintetizado) ---------- */
+function modemSound() {
+  if (!audio) return 0;
+  const t0 = audio.currentTime + 0.05; let t = t0;
+  const hp = audio.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 300;
+  const lp = audio.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3400;
+  const line = audio.createGain(); line.gain.value = 0.9; hp.connect(lp).connect(line).connect(master);
+  const tone = (at, f, dur, g) => { const o = audio.createOscillator(); o.frequency.value = f; const gg = audio.createGain();
+    gg.gain.setValueAtTime(0.0001, at); gg.gain.exponentialRampToValueAtTime(g, at + 0.01); gg.gain.setValueAtTime(g, at + dur - 0.01); gg.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.connect(gg).connect(hp); o.start(at); o.stop(at + dur + 0.02); };
+  const noise = (at, dur, f, q, g) => { const n = audio.createBufferSource(); n.buffer = noiseBuffer(dur + 0.05);
+    const bp = audio.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q; const gg = audio.createGain();
+    gg.gain.setValueAtTime(0.0001, at); gg.gain.exponentialRampToValueAtTime(g, at + 0.03); gg.gain.setValueAtTime(g, at + dur - 0.05); gg.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    n.connect(bp).connect(gg).connect(hp); n.start(at); n.stop(at + dur + 0.05); };
+  const fsk = (at, dur, f1, f2, g) => { const o = audio.createOscillator(); const gg = audio.createGain();
+    for (let x = 0; x < dur; x += 0.0033) o.frequency.setValueAtTime(Math.random() < 0.5 ? f1 : f2, at + x);
+    gg.gain.setValueAtTime(0.0001, at); gg.gain.exponentialRampToValueAtTime(g, at + 0.01); gg.gain.setValueAtTime(g, at + dur - 0.01); gg.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.connect(gg).connect(hp); o.start(at); o.stop(at + dur + 0.02); };
+  thump(t, 90, 0.05, 0.25);                                        // descolgar
+  t += 0.25; tone(t, 350, 1.3, 0.08); tone(t, 440, 1.3, 0.08);    // tono de marcar
+  t += 1.45;
+  const DT = { '1': [697, 1209], '5': [770, 1336], '9': [852, 1477], '3': [697, 1477] };
+  for (const d of '5551993') { tone(t, DT[d][0], 0.09, 0.1); tone(t, DT[d][1], 0.09, 0.1); t += 0.16; }
+  const ring = t + 0.5; tone(ring, 440, 1.6, 0.06); tone(ring, 480, 1.6, 0.06);       // tono de llamada
+  const ans = ring + 2.3; tone(ans, 2100, 1.9, 0.09);                                  // tono de respuesta
+  let n2 = ans + 2.0;
+  fsk(n2, 0.55, 1650, 1850, 0.08); n2 += 0.6;                                          // V.21
+  tone(n2, 1800, 0.55, 0.08); n2 += 0.55; tone(n2, 600, 0.45, 0.06); tone(n2, 3000, 0.45, 0.05); n2 += 0.5;   // "biiii-buuuu"
+  noise(n2, 1.1, 1800, 0.6, 0.35); noise(n2 + 1.1, 0.45, 1000, 0.9, 0.3); noise(n2 + 1.55, 1.3, 2300, 0.5, 0.4); n2 += 2.9; // "kssshhhh"
+  return { ring: (ring - t0) * 1000, answer: (ans - t0) * 1000, train: (ans + 2 - t0) * 1000, total: (n2 - t0) * 1000,
+           stop() { line.gain.cancelScheduledValues(audio.currentTime); line.gain.setValueAtTime(0, audio.currentTime); } };
+}
+
+/* ---------- BBS reales por Internet (telnet a traves de fTelnet) ---------- */
+/* La pagina no puede abrir conexiones telnet: el visor bloquea la red. La sesion real
+   se abre en una pestana nueva con fTelnet (ftelnet.ca), un terminal web cuyo proxy
+   publico convierte WebSocket en telnet. Lista de BBS segun lo conocido; pueden cambiar. */
+const APP_VERSION = 'v19';
+/* [tecla, host, puerto, nombre, pais, grupo]. Todos respondieron por telnet el 27-11-2026.
+   El pais de los latinoamericanos se deduce de su dominio (.uy, .ar, .br). */
+const BBS_LIST = [
+  ['C', '', 0, 'Copihue BBS', 'Chile', 'Chile (dentro de DOS 486)'],
+  ['D', '', 0, 'Copihue BBS (Docker)', 'Chile', 'Chile (dentro de DOS 486)'],
+  ['1', 'vert.synchro.net', 23, 'Vertrauen', '', 'Internacional'],
+  ['2', 'bbs.fozztexx.com', 23, 'RetroBattlestations', '', 'Internacional'],
+  ['3', 'bbs.electronicchicken.com', 23, 'Electronic Chicken', '', 'Internacional'],
+  ['4', 'bbs.bottomlessabyss.net', 2023, 'Bottomless Abyss', '', 'Internacional'],
+  ['5', 'undernet.uy', 23, 'Undernet BBS', 'Uruguay', 'Latinoamerica'],
+  ['6', 'crm.bertonmoreno.com.ar', 23021, "Ragnarok's BBS", 'Argentina', 'Latinoamerica'],
+  ['7', 'bbs.retronet.com.br', 2323, 'Mutiny Brazil', 'Brasil', 'Latinoamerica'],
+  ['8', 'bbs.softsolutions.net.br', 2023, 'Soft Solutions', 'Brasil', 'Latinoamerica'],
+  ['9', 'bbs.conf.eti.br', 23, 'Clube da Insonia', 'Brasil', 'Latinoamerica'],
+  ['A', 'bbs.hispamsx.org', 23, 'HispaMSX BBS', 'Espana', 'En castellano (Espana)'],
+  ['B', 'bbs.zruspas.org', 23, "Zruspa's BBS", 'Espana', 'En castellano (Espana)'],
+];
+function ftelnetUrl(host, port) {
+  const q = new URLSearchParams({
+    BareLFtoCRLF: 'false', BitsPerSecond: '57600', ConnectionType: 'telnet', Emulation: 'ansi-bbs', Enter: '\\r',
+    Font: 'CP437', ForceWss: 'false', FullScreenOnConnect: 'false', Hostname: host, LocalEcho: 'false',
+    NegotiateLocalEcho: 'true', Port: String(port), ProxyHostname: 'p-us-east.ftelnet.ca', ProxyPort: '80',
+    ProxyPortSecure: '443', ScreenColumns: '80', ScreenRows: '25', SendLocation: 'false', AutoConnect: 'true' });
+  return 'https://embed-v2.ftelnet.ca/connect/?' + q.toString();
+}
+
+/* ---------- Sesion real dentro de la pantalla (solo con la pagina abierta directamente) ---------- */
+/* Dentro del visor de claude.ai las conexiones externas estan bloqueadas: ahi se usa la pestana nueva. */
+const STANDALONE = (() => { try { return window.top === window.self; } catch (_) { return false; } })();
+const PROXY = new URLSearchParams(location.search).get('proxy') || 'wss://p-us-east.ftelnet.ca';
+const CP437 = 'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ';
+const ANSI2CGA = [0, 4, 2, 6, 1, 5, 3, 7];
+let live = null;   /* { ws, send } mientras hay sesion */
+
+function liveTerm() {
+  const t = { bold: false, fgA: 7, bgA: 0, rev: false, saved: [0, 0], st: 0, params: '', tn: 0, tnCmd: 0, sb: false };
+  const apply = () => { let f = ANSI2CGA[t.fgA] + (t.bold ? 8 : 0), b = ANSI2CGA[t.bgA]; if (t.rev) [f, b] = [b, f]; term.fg = f; term.bg = b; };
+  const put = (ch) => { if (term.x >= COLS) { term.x = 0; lf(); } term.rows[term.y][term.x] = [ch, term.fg, term.bg]; term.x++; };
+  const lf = () => { term.y++; if (term.y >= ROWS) { term.rows.shift(); term.rows.push([]); term.y = ROWS - 1; } };
+  const clearRow = (y, from, to) => { const r = term.rows[y]; for (let x = from; x < to; x++) r[x] = undefined; };
+  function csi(final) {
+    const ps = t.params.replace(/[?!=]/g, '').split(';').map(n => parseInt(n, 10));
+    const n0 = isNaN(ps[0]) ? 1 : ps[0];
+    switch (final) {
+      case 'm': for (const p of (t.params === '' ? [0] : ps)) {
+          if (isNaN(p) || p === 0) { t.bold = false; t.fgA = 7; t.bgA = 0; t.rev = false; }
+          else if (p === 1) t.bold = true; else if (p === 22) t.bold = false; else if (p === 7) t.rev = true; else if (p === 27) t.rev = false;
+          else if (p >= 30 && p <= 37) t.fgA = p - 30; else if (p === 39) t.fgA = 7;
+          else if (p >= 40 && p <= 47) t.bgA = p - 40; else if (p === 49) t.bgA = 0;
+          else if (p >= 90 && p <= 97) { t.fgA = p - 90; t.bold = true; } }
+        apply(); break;
+      case 'H': case 'f': term.y = Math.min(ROWS - 1, Math.max(0, (isNaN(ps[0]) ? 1 : ps[0]) - 1)); term.x = Math.min(COLS - 1, Math.max(0, (isNaN(ps[1]) ? 1 : ps[1]) - 1)); break;
+      case 'A': term.y = Math.max(0, term.y - n0); break;
+      case 'B': term.y = Math.min(ROWS - 1, term.y + n0); break;
+      case 'C': term.x = Math.min(COLS - 1, term.x + n0); break;
+      case 'D': term.x = Math.max(0, term.x - n0); break;
+      case 'J': if (isNaN(ps[0]) || ps[0] === 0) { clearRow(term.y, term.x, COLS); for (let y = term.y + 1; y < ROWS; y++) term.rows[y] = []; }
+        else if (ps[0] === 1) { for (let y = 0; y < term.y; y++) term.rows[y] = []; clearRow(term.y, 0, term.x + 1); }
+        else { term.rows = Array.from({ length: ROWS }, () => []); term.x = 0; term.y = 0; } break;
+      case 'K': if (isNaN(ps[0]) || ps[0] === 0) clearRow(term.y, term.x, COLS); else if (ps[0] === 1) clearRow(term.y, 0, term.x + 1); else term.rows[term.y] = []; break;
+      case 's': t.saved = [term.x, term.y]; break;
+      case 'u': [term.x, term.y] = t.saved; break;
+      case 'n': if (ps[0] === 6 && live) live.send(`\x1b[${term.y + 1};${term.x + 1}R`); break;
+      case 'c': if (live && t.params === '') live.send('\x1b[?1;0c'); break;
+    }
+  }
+  function telnet(b) {   /* devuelve true si el byte pertenece a una orden telnet */
+    const IAC = 255;
+    if (t.tn === 0) { if (b === IAC) { t.tn = 1; return true; } return t.sb; }
+    if (t.tn === 1) {
+      if (b === IAC) { t.tn = 0; return t.sb; }                 /* 255 literal */
+      if (b === 250) { t.sb = true; t.sbOpt = -1; t.tn = 0; return true; }
+      if (b === 240) { t.sb = false; t.tn = 0; if (t.sbOpt === 24 && live) live.send('\xff\xfa\x18\x00ANSI\xff\xf0'); return true; }
+      if (b >= 251 && b <= 254) { t.tnCmd = b; t.tn = 2; return true; }
+      t.tn = 0; return true;
+    }
+    if (t.tn === 2) {
+      const o = b, c = t.tnCmd; t.tn = 0;
+      if (!live) return true;
+      if (c === 253) {                                            /* DO */
+        if (o === 24 || o === 0 || o === 3) live.send('\xff\xfb' + String.fromCharCode(o));
+        else if (o === 31) live.send('\xff\xfb\x1f\xff\xfa\x1f\x00\x50\x00\x19\xff\xf0');   /* NAWS 80x25 */
+        else live.send('\xff\xfc' + String.fromCharCode(o));
+      } else if (c === 251) {                                     /* WILL */
+        live.send((o === 1 || o === 3 || o === 0 ? '\xff\xfd' : '\xff\xfe') + String.fromCharCode(o));
+      }
+      return true;
+    }
+    return true;
+  }
+  return function feed(bytes) {
+    for (const b of bytes) {
+      if (t.sb) { if (t.sbOpt === -1 && t.tn === 0 && b !== 255) { t.sbOpt = b; continue; } }
+      if (telnet(b)) continue;
+      if (t.st === 1) { if (b === 0x5b) { t.st = 2; t.params = ''; } else t.st = 0; continue; }
+      if (t.st === 2) { const ch = String.fromCharCode(b); if (/[0-9;?!=]/.test(ch)) t.params += ch; else { csi(ch); t.st = 0; } continue; }
+      if (b === 0x1b) { t.st = 1; continue; }
+      if (b === 13) term.x = 0; else if (b === 10) lf(); else if (b === 8) term.x = Math.max(0, term.x - 1);
+      else if (b === 9) term.x = Math.min(COLS - 1, (term.x + 8) & ~7); else if (b === 7) SFX.beep();
+      else if (b === 12) { term.rows = Array.from({ length: ROWS }, () => []); term.x = 0; term.y = 0; }
+      else if (b >= 32) put(b < 128 ? String.fromCharCode(b) : CP437[b - 128]);
+    }
+  };
+}
+
+/* ---------- Conexion telnet directa desde la app instalada de Claude (permiso "acceso total") ---------- */
+/* Un proceso pequeno (PowerShell en Windows, Python en Mac/Linux) abre el socket TCP al BBS y pasa los
+   bytes en lineas base64: "C" conectado, "D<base64>" datos, "X" cerrado, "E<texto>" error. */
+const PS_WS_BRIDGE = String.raw`$ErrorActionPreference='Stop'
+$o = [Console]::Out
+try {
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  $ws = New-Object Net.WebSockets.ClientWebSocket
+  $ws.Options.AddSubProtocol('binary')
+  $ct = [Threading.CancellationToken]::None
+  $ws.ConnectAsync([Uri]'__URL__', $ct).GetAwaiter().GetResult()
+} catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; $o.WriteLine('E' + $e.Message); $o.Flush(); exit 1 }
+$o.WriteLine('C'); $o.Flush()
+try {
+  $rb = New-Object byte[] 65536; $rs = New-Object 'ArraySegment[byte]' -ArgumentList @(,$rb); $rt = $ws.ReceiveAsync($rs, $ct)
+  $inPath = Join-Path $env:USERPROFILE '__INFILE__'
+  $fin = [IO.File]::Open($inPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+  $ib = New-Object byte[] 65536; $line = New-Object Text.StringBuilder
+  while ($ws.State -eq 'Open') {
+    $busy = $false
+    if ($rt.IsCompleted) {
+      $r = $rt.GetAwaiter().GetResult()
+      if ($r.MessageType -eq 'Close') { $o.WriteLine('E' + 'el puente cerro la conexion: ' + $ws.CloseStatus + ' ' + $ws.CloseStatusDescription); break }
+      if ($r.Count -gt 0) { $o.WriteLine('D' + [Convert]::ToBase64String($rb, 0, $r.Count)); $o.Flush() }
+      $rt = $ws.ReceiveAsync($rs, $ct); $busy = $true
+    }
+    if ($fin.Length -gt $fin.Position) {
+      $n = $fin.Read($ib, 0, $ib.Length)
+      if ($n -gt 0) {
+        [void]$line.Append([Text.Encoding]::ASCII.GetString($ib, 0, $n))
+        $txt = $line.ToString(); $k = $txt.LastIndexOf([char]10)
+        if ($k -ge 0) {
+          foreach ($l in $txt.Substring(0, $k).Split([char]10)) { $l = $l.Trim(); if ($l.Length -gt 0) {
+            $b = [Convert]::FromBase64String($l); $seg = New-Object 'ArraySegment[byte]' -ArgumentList @(,$b)
+            $ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Binary, $true, $ct).GetAwaiter().GetResult() } }
+          [void]$line.Clear(); [void]$line.Append($txt.Substring($k + 1))
+        }
+        $busy = $true
+      }
+    }
+    if (-not $busy) { Start-Sleep -Milliseconds 10 }
+  }
+} catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; $o.WriteLine('E' + $e.GetType().Name + ': ' + $e.Message); $o.Flush() }
+if ($ws.State -ne 'Open') { $o.WriteLine('E' + 'estado del WebSocket: ' + $ws.State) }
+$o.WriteLine('X'); $o.Flush()`;
+const PS_BRIDGE = String.raw`$ErrorActionPreference='Stop'
+try { $c = New-Object Net.Sockets.TcpClient; $c.NoDelay = $true; $c.Connect('__HOST__', __PORT__) } catch { [Console]::Out.WriteLine('E' + $_.Exception.Message); exit 1 }
+$s = $c.GetStream(); $o = [Console]::Out; $o.WriteLine('C'); $o.Flush()
+$buf = New-Object byte[] 65536
+$inPath = Join-Path $env:USERPROFILE '__INFILE__'
+$fin = [IO.File]::Open($inPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+$ib = New-Object byte[] 65536; $line = New-Object Text.StringBuilder
+while ($true) {
+  $busy = $false
+  while ($s.DataAvailable) { $n = $s.Read($buf, 0, $buf.Length); if ($n -le 0) { break }; $o.WriteLine('D' + [Convert]::ToBase64String($buf, 0, $n)); $busy = $true }
+  if ($busy) { $o.Flush() }
+  if ($fin.Length -gt $fin.Position) {
+    $n = $fin.Read($ib, 0, $ib.Length)
+    [void]$line.Append([Text.Encoding]::ASCII.GetString($ib, 0, $n))
+    $txt = $line.ToString(); $k = $txt.LastIndexOf([char]10)
+    if ($k -ge 0) {
+      foreach ($l in $txt.Substring(0, $k).Split([char]10)) { $l = $l.Trim(); if ($l.Length -gt 0) { $b = [Convert]::FromBase64String($l); $s.Write($b, 0, $b.Length) } }
+      [void]$line.Clear(); [void]$line.Append($txt.Substring($k + 1))
+    }
+    $busy = $true
+  }
+  if ($c.Client.Poll(0, [Net.Sockets.SelectMode]::SelectRead) -and $c.Available -eq 0) { break }
+  if (-not $busy) { Start-Sleep -Milliseconds 10 }
+}
+$o.WriteLine('X'); $o.Flush()`;
+const PY_BRIDGE = String.raw`import base64, os, select, socket, sys, time
+inpath = os.path.join(os.path.expanduser('~'), '__INFILE__')
+try:
+    s = socket.create_connection(('__HOST__', __PORT__), timeout=20); s.settimeout(None)
+except Exception as e:
+    print('E' + str(e), flush=True); sys.exit(1)
+print('C', flush=True)
+fin = open(inpath, 'a+b'); fin.seek(0); buf = b''
+while True:
+    r, _, _ = select.select([s], [], [], 0.01)
+    if s in r:
+        d = s.recv(65536)
+        if not d: break
+        print('D' + base64.b64encode(d).decode(), flush=True)
+    chunk = fin.read()
+    if chunk:
+        buf += chunk
+        *lines, buf = buf.split(b'\n')
+        for l in lines:
+            l = l.strip()
+            if l: s.sendall(base64.b64decode(l))
+print('X', flush=True)`;
+let desktopApi = null;
+const desktopReady = (async () => {
+  try { const d = await (window.claude && window.claude.use ? window.claude.use('desktop') : null); if (d && d.childProcess) desktopApi = d; } catch (_) {}
+})();
+async function nativeAvailable() {
+  await desktopReady; if (!desktopApi) return false;
+  try { const st = await desktopApi.permissions.state('full-access'); return st === 'granted' || st === 'prompt'; } catch (_) { return false; }
+}
+const b64enc = (bytes) => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
+let desktopPlatform = /Windows/i.test(navigator.userAgent) ? 'win32' : '';
+function nativeConnect(host, port, handlers) {
+  if (!/^[a-z0-9.-]+$/i.test(host) || !(port > 0 && port < 65536)) throw new Error('host o puerto invalido');
+  const enc = (script) => { let u = ''; for (const ch of script) { const c = ch.charCodeAt(0); u += String.fromCharCode(c & 255, c >> 8); }   /* UTF-16LE */
+    return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', btoa(u)]; };
+  /* canal de entrada: archivo temporal en la carpeta del usuario (no depende de stdin) */
+  const inFile = `.dos486-bbs-${Date.now().toString(36)}.in`;
+  const psWs = () => enc(PS_WS_BRIDGE.replace('__URL__', `wss://p-us-east.ftelnet.ca/${host}/${port}`).replace('__INFILE__', inFile));
+  const psTcp = () => enc(PS_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port)).replace('__INFILE__', inFile));
+  const py = () => ['-u', '-c', PY_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port)).replace('__INFILE__', inFile)];
+  let outQ = Promise.resolve();
+  /* intentos en orden; si uno falla antes de conectar, se prueba el siguiente y se guarda su error */
+  const cands = desktopPlatform === 'win32'
+    ? [['powershell.exe', psWs, 'PowerShell vía puerto 443'], ['powershell.exe', psTcp, 'PowerShell directo puerto ' + port],
+       ['pwsh.exe', psWs, 'PowerShell 7 vía 443'], ['python.exe', py, 'Python directo'], ['py.exe', py, 'Python directo']]
+    : [['python3', py, 'Python directo'], ['python', py, 'Python directo'], ['pwsh', psWs, 'PowerShell 7 vía 443']];
+  let proc = null, opened = false, done = false, idx = 0;
+  const errs = [];
+  const finish = (why) => { if (!done) { done = true; handlers.close(why); } };
+  const start = () => {
+    if (idx >= cands.length) { finish(errs.join(' | ') || 'no se encontro PowerShell ni Python'); return; }
+    const [cmd, args, label] = cands[idx++];
+    handlers.trying && handlers.trying(label);
+    let me, gotX = false, bytesIn = 0;
+    try { me = desktopApi.childProcess.spawn(cmd, args()); } catch (e) { errs.push(label + ': ' + (e.message || e)); start(); return; }
+    proc = me; let pending = '', stderr = '', failed = false;
+    const fail = (m) => { if (proc !== me || failed) return; failed = true; errs.push(label + ': ' + m.trim().slice(0, 200)); if (!opened) start(); else finish(errs.join(' | ')); };
+    me.stdout.on('data', (chunk) => {
+      if (proc !== me) return;
+      pending += chunk; let i;
+      while ((i = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, i).replace(/\r$/, ''); pending = pending.slice(i + 1);
+        if (line === 'C') { opened = true; handlers.open(); }
+        else if (line[0] === 'D') { const bin = atob(line.slice(1)); bytesIn += bin.length; const out = new Array(bin.length); for (let k = 0; k < bin.length; k++) out[k] = bin.charCodeAt(k); handlers.data(out); }
+        else if (line === 'X') { gotX = true; if (opened) finish(errs.length ? errs.join(' | ') : (bytesIn ? '' : `${label}: el puente cerro sin recibir datos del BBS`)); }
+        else if (line[0] === 'E') fail(line.slice(1));
+      }
+    });
+    me.stderr.on('data', (chunk) => { stderr += chunk; });
+    me.on('error', (e) => fail(String(e && e.message || e)));
+    me.on('exit', (code) => {
+      if (proc !== me) return;
+      if (opened) {
+        setTimeout(() => {
+          if (done) return;
+          const why = (stderr.replace(/\s+/g, ' ').trim() || '') + ` (${label} termino con codigo ${code}${gotX ? '' : ', sin aviso de cierre'}; bytes recibidos: ${bytesIn})`;
+          finish(gotX && !stderr && code === 0 ? '' : why.trim());
+        }, 80);
+        return;
+      }
+      setTimeout(() => fail(stderr.replace(/\s+/g, ' ') || ('el programa termino (codigo ' + code + ')')), 50);
+    });
+  };
+  desktopApi.fs.writeFile('~/' + inFile, '').then(start, (e) => { errs.push('archivo de entrada: ' + (e.message || e)); finish(errs.join(' | ')); });
+  return {
+    send: (s) => { const line = b64enc(Array.from(s, c => c.charCodeAt(0) & 255)) + '\n'; outQ = outQ.then(() => desktopApi.fs.appendFile('~/' + inFile, line)).catch(() => {}); },
+    close: () => { const p0 = proc; finish(''); if (p0) p0.kill().catch(() => {}); setTimeout(() => desktopApi.fs.rm('~/' + inFile, { force: true }).catch(() => {}), 1500); },
+  };
+}
+desktopReady.then(async () => {
+  if (!desktopApi) return;
+  try { const pl = await desktopApi.os.platform(); if (pl) desktopPlatform = pl; } catch (_) {}
+  try {   /* icono de la app instalada: monitor con "486" */
+    const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
+    g.fillStyle = '#cdc4ae'; g.fillRect(16, 24, 224, 176); g.fillStyle = '#000'; g.fillRect(36, 42, 184, 136);
+    g.fillStyle = '#a89f88'; g.fillRect(96, 200, 64, 20); g.fillRect(60, 220, 136, 16);
+    g.fillStyle = '#ffd75a'; g.font = 'bold 72px monospace'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('486', 128, 104);
+    g.fillStyle = '#c7c7c7'; g.font = 'bold 26px monospace'; g.fillText('C:\\>_', 128, 152);
+    await desktopApi.app.dock.setIcon(c.toDataURL('image/png'));
+  } catch (_) {}
+});
+
+async function liveSession(tok, host, port, native) {
+  const feed = liveTerm(); const queue = []; let opened = false, closed = false, err = '';
+  let ws = null;
+  try {
+    await print('\n', tok); await typeAT(tok, `ATDT ${host}`);
+    statusEl.textContent = `Llamando a ${host}…`;
+    const tm = soundOn ? modemSound() : null;          /* ambientacion del marcado; la conexion se abre al final */
+    const t0 = performance.now(), T = tm ? Math.min(tm.total, 9000) : 1200;
+    while (performance.now() - t0 < T) { check(tok); await sleep(50); }
+    if (tm) tm.stop();
+    if (native) {
+      statusEl.textContent = `Llamando a ${host}… (conexión directa desde tu PC)`;
+      try {
+        live = nativeConnect(host, port, { open: () => { opened = true; }, data: (b) => queue.push(b), close: (why) => { if (why) err = why; closed = true; },
+          trying: (label) => { statusEl.textContent = `Llamando a ${host}… (${label})`; } });
+      } catch (e) { err = String(e.message || e); closed = true; }
+    } else {
+      ws = new WebSocket(`${PROXY}/${host}/${port}`, ['binary']);   /* mismo subprotocolo que fTelnet */
+      ws.binaryType = 'arraybuffer';
+      const toBytes = (m) => typeof m === 'string' ? Array.from(m, c => c.charCodeAt(0) & 255) : Array.from(new Uint8Array(m));
+      ws.onopen = () => { opened = true; };
+      ws.onmessage = (e) => { queue.push(toBytes(e.data)); };
+      ws.onerror = () => { err = 'no se pudo abrir la conexión'; };
+      ws.onclose = () => { closed = true; };
+      live = { send: (s) => { if (ws.readyState === 1) ws.send(Uint8Array.from(s, c => c.charCodeAt(0) & 255).buffer); }, close: () => ws.close() };
+    }
+    for (let i = 0; i < 600 && !opened && !closed; i++) { check(tok); await sleep(100); }   /* incluye el tiempo del dialogo de permiso */
+    if (!opened) {
+      await print(`\n{15}NO CARRIER{7}\n`, tok, 3000);
+      for (const e of (err || 'sin respuesta').split(' | ')) await print(`{8}  - ${e.replace(/[{}]/g, '')}{7}\n`, tok, 3000);
+      statusEl.textContent = 'No se pudo conectar: copia el detalle de la pantalla si necesitas ayuda.';
+      await getKey(tok, 'V', [['V', 'Volver a DOS']]); return;
+    }
+    await print(`\n{15}CONNECT 57600{7}\n`, tok, 4000);
+    term.fg = 7; term.bg = 0;
+    statusEl.textContent = `Conectado a ${host}:${port} (telnet real${native ? ', directo desde tu PC' : ' vía fTelnet'}). Escribe en la pantalla.`;
+    liveKeys = true;
+    setHotkeys([['KB', 'Teclado'], ['ENTER', 'Enter'], ['ESC', 'Esc'], ['SPC', 'Espacio'], ['HANG', 'Colgar']]);
+    while (!closed || queue.length) {
+      check(tok);
+      if (queue.length) { while (queue.length) feed(queue.shift()); tRender(); }   /* responde al instante a la negociacion */
+      if (closed) break;
+      await new Promise(r => setTimeout(r, 16));
+    }
+    await print('\r\n{15}NO CARRIER{7}\r\n', tok, 3000);
+    if (err) { for (const e of err.split(' | ')) await print(`{8}  - ${e.replace(/[{}]/g, '')}{7}\r\n`, tok, 3000);
+      statusEl.textContent = 'La conexión se cortó: copia el detalle de la pantalla si necesitas ayuda.'; await getKey(tok, 'V', [['V', 'Volver a DOS']]); }
+    else await sleep(1200);
+  } finally {
+    liveKeys = false;
+    try { if (live) live.close(); } catch (_) {}
+    live = null;
+  }
+}
+let liveKeys = false;
+$('mkb').addEventListener('input', (e) => { const v = e.target.value; e.target.value = ''; if (!live && v && bbsActive) { for (const ch of v) { SFX.key(true); feedKey(ch); } return; } if (live && v) { for (const ch of v) { SFX.key(true); const i = CP437.indexOf(ch); live.send(ch.charCodeAt(0) < 128 ? ch : (i >= 0 ? String.fromCharCode(128 + i) : '?')); } } });
+$('mkb').addEventListener('keydown', (e) => { if (!live) { if (bbsActive && (e.key === 'Enter' || e.key === 'Backspace')) { e.preventDefault(); feedKey(e.key === 'Enter' ? '\r' : '\b'); } e.stopPropagation(); return; } if (e.key === 'Enter') { e.preventDefault(); live.send('\r'); } else if (e.key === 'Backspace') { e.preventDefault(); live.send('\b'); } e.stopPropagation(); });
+function liveKey(e) {   /* teclado del PC -> BBS */
+  if (!live) return false;
+  const map = { Enter: '\r', Backspace: '\b', Tab: '\t', Escape: '\x1b', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D',
+    Home: '\x1b[H', End: '\x1b[K', Delete: '\x7f' };
+  let s = map[e.key];
+  if (!s && e.key.length === 1) {
+    if (e.ctrlKey && /[a-z]/i.test(e.key)) s = String.fromCharCode(e.key.toUpperCase().charCodeAt(0) - 64);
+    else { const i = CP437.indexOf(e.key); s = e.key.charCodeAt(0) < 128 ? e.key : (i >= 0 ? String.fromCharCode(128 + i) : '?'); }
+  }
+  if (!s) return false;
+  live.send(s); return true;
+}
+
+async function typeAT(tok, s) {
+  for (const ch of s) { check(tok); SFX.key(true); tPut(ch); tRender(); await sleep(90 + Math.random() * 60); }
+  tPut('\n'); tRender(); SFX.key(true); await sleep(250);
+}
+
+/* =====================================================================
+   Copihue BBS: BBS chileno dentro de DOS 486. Foros, alias y usuarios en
+   la base de datos compartida del artefacto (db); quien esta conectado y
+   chat en vivo con room. Nada inventado: parte vacio y lo llenan personas.
+   ===================================================================== */
+const COPIHUE_LOGO = [
+  ' ██████╗ ██████╗ ██████╗ ██╗██╗  ██╗██╗   ██╗███████╗',
+  '██╔════╝██╔═══██╗██╔══██╗██║██║  ██║██║   ██║██╔════╝',
+  '██║     ██║   ██║██████╔╝██║███████║██║   ██║█████╗  ',
+  '██║     ██║   ██║██╔═══╝ ██║██╔══██║██║   ██║██╔══╝  ',
+  '╚██████╗╚██████╔╝██║     ██║██║  ██║╚██████╔╝███████╗',
+  ' ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝'];
+/* Bandera de Chile (18x6): canton azul con estrella blanca, franja blanca, franja roja */
+const FLAG = [
+  '{1}██████{15}████████████', '{b1}{15}  ★   {b0}{15}████████████', '{1}██████{15}████████████',
+  '{4}██████████████████', '{4}██████████████████', '{4}██████████████████'];
+const FOROS = [['general', 'General'], ['juegos', 'Juegos'], ['retro', 'Computacion retro'], ['chile', 'Cosas de Chile']];
+const clean = (t, n) => String(t == null ? '' : t).replace(/[{}\u0000-\u001f\u007f]/g, ' ').slice(0, n);
+const fmtFecha = (iso) => { const d = new Date(iso); if (isNaN(d)) return '';
+  return d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }); };
+let cDb = null, cUser = null, cRoom = null, cMe = null, cAlias = '', cOwner = false;
+async function cUse(name) { try { return await (window.claude && window.claude.use ? window.claude.use(name) : null); } catch (_) { return null; } }
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error('la base de datos no responde')), ms))]);
+const errTxt = (e) => clean(e && (e.code || e.message) || e, 70);
+const cWhere = (w) => { if (cRoom && cAlias) cRoom.presence({ alias: cAlias, where: w }).catch(() => {}); };
+
+async function cAliases() {
+  const snap = await withTimeout(cDb.collection('handles').get(), 10000);
+  const m = {}; for (const d of snap.docs) if (d.exists) m[d.id] = clean(d.data().alias, 16); return m;
+}
+
+async function copihueSession(tok) {
+  [cDb, cUser, cRoom] = await Promise.all([cUse('db'), cUse('user'), cUse('room')]);
+  cMe = cUser ? await cUser.id() : null;
+  cOwner = cUser ? !!(await cUser.isOwner()) : false;
+  await print('\n', tok); await typeAT(tok, 'ATDT 2-555-1990');
+  statusEl.textContent = 'Llamando a Copihue BBS…';
+  const tm = soundOn ? modemSound() : null;
+  const t0 = performance.now(), T = tm ? Math.min(tm.total, 7000) : 1200;
+  while (performance.now() - t0 < T) { check(tok); await sleep(50); }
+  if (tm) tm.stop();
+  await print('\n{15}CONNECT 14400{7}\n', tok, 3000); await sleep(400);
+  term.cps = 2400;
+  let s = '{cls}\n';
+  const cols = [12, 12, 12, 4, 4, 8];
+  COPIHUE_LOGO.forEach((l, i) => { s += `{${cols[i]}} ${l}  ${FLAG[i]}{7}\n`; });
+  s += '{12}   B   B   S {8}  ·  Santiago de Chile  ·  un BBS de verdad dentro de DOS 486{7}\n\n';
+  await print(s, tok);
+  statusEl.textContent = 'Conectado a Copihue BBS';
+  if (!cDb) {
+    await print('{12}   La base de datos de Copihue BBS no esta disponible en esta vista.{7}\n   Abrela desde claude.ai o desde la app instalada de Claude.\n\n{8}   [Pulsa una tecla]{7}', tok);
+    await anyKey(tok); return;
+  }
+  let canWrite = !!cMe;
+  cAlias = '';
+  if (cMe) {
+    try { const h = await withTimeout(cDb.doc('handles/' + cMe).get(), 10000); if (h.exists) cAlias = clean(h.data().alias, 16); }
+    catch (e) { await print(`{12}   No se pudo leer tu alias: ${errTxt(e)}{7}\n`, tok); }
+  }
+  if (!cMe) {
+    cAlias = 'VISITANTE'; canWrite = false;
+    await print('{8}   Esta vista no tiene identidad de Claude: entras como VISITANTE, solo lectura.{7}\n', tok);
+  } else if (!cAlias) {
+    await print('{11}   Primera vez en Copihue BBS. Elige tu alias (3 a 16 caracteres): {15}', tok);
+    for (;;) {
+      const a = clean((await getLine(tok, 16, [['KB', 'Teclado'], ['\r', 'Enter']])).trim(), 16);
+      if (a.length >= 3) {
+        try { await cDb.doc('handles/' + cMe).set({ alias: a, since: new Date().toISOString() }); cAlias = a; }
+        catch (e) { cAlias = a; canWrite = false; await print(`{12}   No se pudo guardar tu alias (${errTxt(e)}): entras en modo solo lectura.{7}\n`, tok); }
+        break;
+      }
+      await print('{12}   Debe tener al menos 3 caracteres: {15}', tok);
+    }
+  }
+  cWhere('Menu principal');
+  await print(`\n{7}   Bienvenido/a, {15}${cAlias}{7}${cOwner ? ' {14}(SysOp){7}' : ''}.\n\n{8}   [Pulsa una tecla]{7}`, tok);
+  await anyKey(tok);
+  for (;;) {
+    cWhere('Menu principal');
+    await print('{cls}\n' + box('COPIHUE BBS  ·  MENU PRINCIPAL', ['',
+      '   {14}[F]{7} Foros de mensajes        {14}[C]{7} Chat en vivo',
+      '   {14}[Q]{7} Quien esta conectado     {14}[U]{7} Usuarios',
+      '   {14}[A]{7} Acerca de Copihue BBS    {14}[S]{7} Salir (colgar)', ''], 66, 12) +
+      `\n{8}   ${cAlias}${cOwner ? ' · SysOp' : ''}${canWrite ? '' : ' · solo lectura'}{7}\n\n{11}   Comando{7}: {15}`, tok);
+    const k = await getKey(tok, 'FCQUAS', [['F', 'Foros'], ['C', 'Chat en vivo'], ['Q', 'Quien esta'], ['U', 'Usuarios'], ['A', 'Acerca de'], ['S', 'Salir']]);
+    await print(k + '\n', tok);
+    if (k === 'F') await cForos(tok, canWrite);
+    else if (k === 'C') await cChat(tok, canWrite);
+    else if (k === 'Q') await cQuien(tok);
+    else if (k === 'U') await cUsuarios(tok);
+    else if (k === 'A') await cAcerca(tok);
+    else break;
+  }
+  if (cRoom) cRoom.presence({ alias: null, where: null }).catch(() => {});
+  await print('\n{14}   Gracias por llamar a Copihue BBS. ¡Vuelve pronto!{7}\n', tok); await sleep(700);
+  await print('{15}NO CARRIER{7}\n', tok, 3000); await sleep(900);
+}
+
+async function cForos(tok, canWrite) {
+  for (;;) {
+    cWhere('Foros');
+    const counts = {};
+    try { const snap = await withTimeout(cDb.collection('msgs').get(), 10000); for (const d of snap.docs) { const f = d.data().foro; counts[f] = (counts[f] || 0) + 1; } }
+    catch (e) { await print(`{12}   No se pudieron contar los mensajes: ${errTxt(e)}{7}\n`, tok); }
+    const lines = ['', ...FOROS.map(([id, n], i) => `   {14}${i + 1}{7}. ${n.padEnd(24)}{8}${String(counts[id] || 0).padStart(5)} mensajes{7}`), ''];
+    await print('{cls}\n' + box('FOROS DE COPIHUE BBS', lines, 58, 12) + '\n{11}   Elige un foro (1-4) o [V]olver{7}: {15}', tok);
+    const k = await getKey(tok, '1234V', [...FOROS.map(([, n], i) => [String(i + 1), n]), ['V', 'Volver']]);
+    if (k === 'V') return;
+    await print(k + '\n', tok);
+    await cForo(tok, FOROS[+k - 1], canWrite);
+  }
+}
+
+async function cForo(tok, [fid, fname], canWrite) {
+  for (;;) {
+    cWhere('Foro ' + fname);
+    let docs = [];
+    try { const snap = await withTimeout(cDb.collection('msgs').where('foro', '==', fid).orderBy('at', 'desc').limit(9).get(), 10000); docs = snap.docs.filter(d => d.exists); }
+    catch (e) { await print(`{12}   No se pudieron leer los mensajes: ${errTxt(e)}{7}\n`, tok); }
+    let al = {}; try { al = await cAliases(); } catch (_) {}
+    let s = `{cls}\n{12}   FORO {15}${fname}{8}   ·   ultimos ${docs.length} mensajes\n{8}   ${'─'.repeat(74)}{7}\n`;
+    if (!docs.length) s += `{8}   Todavia no hay mensajes.${canWrite ? ' Escribe el primero con [E].' : ''}{7}\n`;
+    docs.forEach((d, i) => { const m = d.data();
+      s += `   {14}${i + 1}{7}. {15}${clean(m.subject, 33).padEnd(34)}{11}${(al[m.by] || '?').padEnd(17)}{8}${fmtFecha(m.at)}{7}\n`; });
+    const keys = 'V' + (canWrite ? 'E' : '') + docs.map((_, i) => String(i + 1)).join('');
+    s += `\n{11}   ${docs.length ? '[1-' + docs.length + '] leer · ' : ''}${canWrite ? '[E]scribir · ' : ''}[V]olver{7}: {15}`;
+    await print(s, tok);
+    const hot = [...docs.map((d, i) => [String(i + 1), clean(d.data().subject, 24)])];
+    if (canWrite) hot.push(['E', 'Escribir']);
+    hot.push(['V', 'Volver']);
+    const k = await getKey(tok, keys, hot);
+    await print(k + '\n', tok);
+    if (k === 'V') return;
+    if (k === 'E') { await cEscribir(tok, fid, fname); continue; }
+    await cLeer(tok, docs[+k - 1], al);
+  }
+}
+
+async function cLeer(tok, d, al) {
+  const m = d.data();
+  let s = `{cls}\n{11}   De: {15}${al[m.by] || '?'}{11}     Fecha: {15}${fmtFecha(m.at)}\n{11}   Asunto: {15}${clean(m.subject, 60)}\n{8}   ${'─'.repeat(74)}{7}\n\n`;
+  for (const l of String(m.body || '').split('\n').slice(0, 15)) s += '   ' + clean(l, 76) + '\n';
+  const mine = m.by === cMe;
+  s += `\n{8}   [Pulsa una tecla para volver]${cOwner || mine ? '   [B] borrar este mensaje' : ''}{7}`;
+  await print(s, tok);
+  const k = await getKey(tok, null, [['\r', 'Volver'], ...((cOwner || mine) ? [['B', 'Borrar']] : [])]);
+  if (k === 'B' && (cOwner || mine)) {
+    await print('\n{12}   ¿Borrar el mensaje? (S/N){7}: ', tok);
+    const y = await getKey(tok, 'SN', [['S', 'Sí, borrar'], ['N', 'No']]);
+    if (y === 'S') {
+      try { await cDb.doc('msgs/' + d.id).delete(); await print('{10}S\n   Mensaje borrado.{7}\n', tok); }
+      catch (e) { await print(`{12}S\n   No se pudo borrar: ${errTxt(e)}{7}\n`, tok); }
+      await sleep(900);
+    }
+  }
+}
+
+async function cEscribir(tok, fid, fname) {
+  cWhere('Escribiendo en ' + fname);
+  await print(`{cls}\n{12}   NUEVO MENSAJE EN {15}${fname}\n{8}   ${'─'.repeat(74)}{7}\n\n{11}   Asunto{7}: {15}`, tok);
+  const subject = clean((await getLine(tok, 40, [['KB', 'Teclado'], ['\r', 'Enter']])).trim(), 40);
+  if (!subject) { await print('{8}   Sin asunto: mensaje cancelado.{7}\n', tok); await sleep(900); return; }
+  await print('\n{7}   Escribe el mensaje (hasta 15 lineas). Una linea vacia lo termina.\n\n', tok);
+  const lines = [];
+  while (lines.length < 15) {
+    await print(`{8}${String(lines.length + 1).padStart(3)}>{15} `, tok);
+    const l = clean(await getLine(tok, 74, [['KB', 'Teclado'], ['\r', 'Enter (linea vacia = fin)']]), 74);
+    if (!l.trim()) break;
+    lines.push(l);
+  }
+  if (!lines.length) { await print('{8}   Mensaje vacio: cancelado.{7}\n', tok); await sleep(900); return; }
+  await print('\n{11}   ¿Publicar? (S/N){7}: ', tok);
+  const y = await getKey(tok, 'SN', [['S', 'Publicar'], ['N', 'Cancelar']]);
+  await print(y + '\n', tok);
+  if (y !== 'S') return;
+  try {
+    await withTimeout(cDb.collection('msgs').add({ foro: fid, by: cMe, subject, body: lines.join('\n'), at: new Date().toISOString() }), 15000);
+    await print('{10}   Mensaje publicado.{7}\n', tok);
+  } catch (e) {
+    await print(`{12}   No se pudo publicar: ${errTxt(e)}${e && e.code === 'invalid_argument' ? ' (tu nivel de acceso no permite escribir)' : ''}{7}\n`, tok);
+  }
+  await sleep(1100);
+}
+
+async function cQuien(tok) {
+  const peers = cRoom ? cRoom.peers() : [];
+  const rows = peers.filter(p => p.kind === 'viewer').map(p => {
+    const pr = p.presence || {};
+    const name = pr.alias ? clean(pr.alias, 16) : '(en DOS 486)';
+    return `   {15}${name.padEnd(18)}{8}${clean(pr.where || 'fuera del BBS', 34)}{7}${p.isMe && p.sameTab ? '  {14}(tu){7}' : ''}`;
+  });
+  if (!cRoom) rows.push('   {8}No disponible en esta vista.{7}');
+  else if (!rows.length) rows.push('   {8}Nadie mas por ahora.{7}');
+  await print('{cls}\n' + box('QUIEN ESTA CONECTADO', ['', ...rows, ''], 66, 12) + '\n{8}   [Pulsa una tecla]{7}', tok);
+  await anyKey(tok);
+}
+
+async function cUsuarios(tok) {
+  let rows = [];
+  try {
+    const snap = await withTimeout(cDb.collection('handles').get(), 10000);
+    rows = snap.docs.filter(d => d.exists).map(d => d.data()).sort((a, b) => String(a.since).localeCompare(String(b.since)))
+      .slice(0, 18).map(u => `   {15}${clean(u.alias, 16).padEnd(18)}{8}desde ${fmtFecha(u.since)}{7}`);
+  } catch (e) { rows = [`   {12}No se pudo leer la lista: ${errTxt(e)}{7}`]; }
+  if (!rows.length) rows = ['   {8}Todavia no hay usuarios registrados.{7}'];
+  await print('{cls}\n' + box('USUARIOS DE COPIHUE BBS', ['', ...rows, ''], 58, 12) + '\n{8}   [Pulsa una tecla]{7}', tok);
+  await anyKey(tok);
+}
+
+async function cAcerca(tok) {
+  await print('{cls}\n' + box('ACERCA DE COPIHUE BBS', ['',
+    '   Copihue BBS es un BBS chileno creado en 2026 dentro de DOS 486.',
+    '   Los foros, los alias y el chat son reales: los escriben las',
+    '   personas con las que se comparte esta app. Nada viene inventado.',
+    '',
+    '   Es un homenaje a la escena BBS chilena de los anos 90. Una de',
+    '   esas BBS fue Araucaria BBS, de Nunoa (Santiago), cuyo sysop era',
+    '   Fernando Jorquera; aparece en un listado de BBS hispanos de 2002',
+    '   con conexion solo por telefono (56-2-277-3814).',
+    '',
+    '   El SysOp de Copihue BBS es quien es dueno de esta app.', ''], 72, 12) + '\n{8}   [Pulsa una tecla]{7}', tok);
+  await anyKey(tok);
+}
+
+async function cChat(tok, canWrite) {
+  if (!cRoom) { await print('{12}   El chat no esta disponible en esta vista.{7}\n{8}   [Pulsa una tecla]{7}', tok); await anyKey(tok); return; }
+  cWhere('Chat en vivo');
+  await print('{cls}\n{12}   CHAT EN VIVO{8}  ·  los mensajes no se guardan  ·  /salir para volver{7}\n\n', tok);
+  const pending = [];
+  const off = cRoom.on('chat', (m) => { const d = m.data || {}; pending.push(`{${m.isMe ? 14 : 11}}${clean(d.alias, 16)}{7}: ${clean(d.text, 200)}`); });
+  let alive = true;
+  const pump = (async () => {   /* imprime lo que llega sin romper lo que estas escribiendo */
+    while (alive) {
+      if (pending.length && keyWaiter && keyWaiter.line && keyWaiter.buf === '') {
+        term.rows[term.y] = []; term.x = 0;
+        while (pending.length) await print(pending.shift() + '\n', tok, 6000);
+        await print(canWrite ? '{15}> ' : '{8}(solo lectura) ', tok, 6000);
+      }
+      await sleep(250);
+    }
+  })().catch(() => {});
+  if (canWrite) cRoom.emit('chat', { alias: cAlias, text: '(entro al chat)' }).catch(() => {});
+  try {
+    for (;;) {
+      await print(canWrite ? '{15}> ' : '{8}(solo lectura) ', tok, 6000);
+      const t = clean(await getLine(tok, 200, [['KB', 'Teclado'], ['\r', 'Enviar']]), 200).trim();
+      if (t === '/salir' || (!canWrite && !t)) break;
+      if (t && canWrite) {
+        try { await cRoom.emit('chat', { alias: cAlias, text: t }); }
+        catch (e) { await print(`{12}   No se pudo enviar: ${errTxt(e)}{7}\n`, tok); }
+      }
+    }
+  } finally { alive = false; off(); }
+  if (canWrite) cRoom.emit('chat', { alias: cAlias, text: '(salio del chat)' }).catch(() => {});
+}
+
+/* Copihue BBS servido por telnet desde Docker (dos486/copihue-bbs). La direccion se recuerda en este navegador. */
+async function copihueDocker(tok, NATIVE, INSCREEN) {
+  let saved = 'localhost:2323';
+  try { saved = localStorage.getItem('copihueDocker') || saved; } catch (_) {}
+  await print(`\n{11}Direccion del servidor Copihue {8}(Enter = ${saved}){11}: {15}`, tok, 3000);
+  const typed = (await getLine(tok, 60, [['KB', 'Teclado'], ['\r', 'Enter = ' + saved]])).trim() || saved;
+  const m = /^([a-z0-9.-]+)(?::(\d{1,5}))?$/i.exec(typed);
+  if (!m) { await print('{12}Direccion invalida. Usa host o host:puerto.{7}\n', tok, 3000); await sleep(1500); return; }
+  const host = m[1], port = +(m[2] || 2323);
+  try { localStorage.setItem('copihueDocker', `${host}:${port}`); } catch (_) {}
+  const local = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(host);
+  if (NATIVE) { await liveSession(tok, host, port, true); return; }
+  if (local) {
+    await print('{12}Un servidor en tu PC o red local solo se alcanza desde la app instalada de Claude\n(conexion directa). Desde aqui usa una direccion publica de Internet.{7}\n\n{8}[Pulsa una tecla]{7}', tok, 3000);
+    await anyKey(tok); return;
+  }
+  if (INSCREEN) { await liveSession(tok, host, port, false); return; }
+  await print(`{7}La sesion se abre en una pestana nueva con fTelnet.{7}\n`, tok, 3000);
+  setHotkeys([['1', `Abrir ${host}:${port}`, ftelnetUrl(host, port)], ['V', 'Volver a DOS']]);
+  await new Promise(r => { keyWaiter = { resolve: r, allowed: 'V1', linkOnly: true }; });
+}
+
+async function bbsSession(tok) {
+  term.fg = 7; tClear();
+  await print(`{15}TERMINAL{7}  -  COM1  57600 baudios  8N1  ANSI   {8}(DOS 486 ${APP_VERSION}${desktopApi ? ', app: ' + (desktopPlatform || '?') : ''}){7}\n\n`, tok, 3000);
+  await typeAT(tok, 'ATZ'); await print('OK\n\n', tok, 3000);
+  let s = '{11}BBS reales en linea (telnet por Internet, probados el 27-11-2026){7}\n';
+  let grp = '';
+  for (const [key, h, p, name, country, g] of BBS_LIST) {
+    if (g !== grp) { grp = g; s += `{9} ${g}{7}\n`; }
+    s += `  {14}${key}{7}. {15}${name.padEnd(21)}{8}${(h ? h + ':' + p : key === 'D' ? 'tu servidor Docker (telnet)' : 'red interna de DOS 486').padEnd(31)}{7}${country}\n`;
+  }
+  const NATIVE = await nativeAvailable();
+  const INSCREEN = NATIVE || STANDALONE;
+  if (NATIVE) s += '\n{7}Elige un BBS. La app abre la conexion telnet desde tu PC y la muestra aqui.\n{8}[V] volver a DOS{7}\n';
+  else if (STANDALONE) s += '\n{7}Elige un BBS. Conexion real por el puente WebSocket de fTelnet, en esta pantalla.\n{8}[V] volver a DOS{7}\n';
+  else s += '\n{7}Elige un BBS abajo. Dentro de claude.ai se abre en una pestana nueva (fTelnet).\n{8}[V] volver a DOS{7}\n';
+  await print(s, tok, 3000);
+  setHotkeys([...BBS_LIST.map(([key, h, p, name, country]) => [key, name + (country ? ' · ' + country : ''), (INSCREEN || !h) ? null : ftelnetUrl(h, p)]), ['V', 'Volver a DOS']]);
+  const keys = 'V' + BBS_LIST.map(b => b[0]).join('');
+  const k = await new Promise(r => { keyWaiter = { resolve: r, allowed: keys, linkOnly: !INSCREEN }; });
+  if (k === 'V') return;
+  if (k === 'C') { await copihueSession(tok); return; }
+  if (k === 'D') { await copihueDocker(tok, NATIVE, INSCREEN); return; }
+  const [, host, port] = BBS_LIST.find(b => b[0] === k);
+  if (INSCREEN) { await liveSession(tok, host, port, NATIVE); return; }
+  let hung = false;
+  const hang = getKey(tok, 'V', [['V', 'Colgar y volver a DOS']]).then(() => { hung = true; });
+  await print('\n', tok); await typeAT(tok, `ATDT ${host}`);
+  statusEl.textContent = `Llamando a ${host}… la sesión real está en la pestaña nueva`;
+  const tm = (soundOn && !hung) ? modemSound() : null;
+  const T = tm || { total: 3000 };
+  const t0 = performance.now();
+  while (!hung && performance.now() - t0 < T.total) { check(tok); await sleep(50); }
+  if (!hung) {
+    await print(`\n{15}CONNECT 57600{7}  {8}(${host}:${port} via fTelnet, en la pestana nueva){7}\n\n{8}[V] colgar y volver a DOS{7}\n`, tok, 3000);
+    statusEl.textContent = `Sesión real con ${host} abierta en la otra pestaña`;
+    await hang;
+  }
+  if (tm) tm.stop();
+  await print('\n+++', tok, 30); await sleep(900); await print('\nOK\n', tok, 3000);
+  await typeAT(tok, 'ATH0');
+  if (audio) thump(audio.currentTime + 0.02, 90, 0.05, 0.25);
+  await print('{15}NO CARRIER{7}\n', tok, 3000); await sleep(1000);
+}
+
+async function bbsStart() {
+  if (bbsActive || !ready) return;
+  bbsActive = true; const tok = ++bbsToken;
+  savedCmds = $('cmds').innerHTML;
+  if (ci) { try { ci.pause(); } catch (_) {} }
+  cv.hidden = true; txt.hidden = true; tcv.hidden = false; fitTerm();
+  statusEl.textContent = 'Programa de terminal';
+  try { await bbsSession(tok); }
+  catch (e) { if (!(e instanceof BbsAbort)) console.error(e); }
+  finally { if (tok === bbsToken) bbsEnd(); }
+}
+function bbsEnd() {
+  if (live) { try { live.close(); } catch (_) {} live = null; } liveKeys = false;
+  if (!bbsActive) return;
+  bbsActive = false; bbsToken++; keyWaiter = null;
+  tcv.hidden = true;
+  $('cmds').innerHTML = savedCmds || ''; setEnabled(ready);
+  if (ci) { try { ci.resume(); } catch (_) {} cv.hidden = false; txt.hidden = true; screenEl.focus(); }
+  if (ready) statusEl.textContent = 'Listo. Un clic escribe el comando en DOS; sal del programa abierto antes de cargar otro.';
+}
+
+/* ---------- pantalla completa y reinicio ---------- */
+$('full').addEventListener('click', async () => {
+  try {
+    if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+    await screenEl.requestFullscreen();
+    /* Chrome: deja que Esc llegue a los juegos; para salir se mantiene Esc presionado */
+    try { await navigator.keyboard?.lock?.(['Escape']); } catch (_) {}
+    screenEl.focus();
+  } catch (_) { statusEl.textContent = 'Este visor no permite pantalla completa. En la app de escritorio usa F11.'; }
+});
+document.addEventListener('fullscreenchange', () => {
+  $('full').textContent = document.fullscreenElement ? 'Salir de pantalla completa' : 'Pantalla completa';
+  if (!document.fullscreenElement) { try { navigator.keyboard?.unlock?.(); } catch (_) {} }
+  if (bbsActive) fitTerm();
+});
+$('reset').addEventListener('click', async () => {   /* boton RESET del gabinete: reinicio en frio, sin apagar */
+  ensureAudio();
+  if (!on) { $('power').click(); return; }
+  if (audio) { click(audio.currentTime + 0.01, 1200, 0.02, 0.3); thump(audio.currentTime + 0.01, 80, 0.06, 0.3); }
+  bbsEnd(); await shutdown();
+  cv.hidden = true; txt.hidden = true; ctx.clearRect(0, 0, cv.width, cv.height);
+  statusEl.textContent = 'Reiniciando…';
+  await sleep(600); SFX.chatter(0.8); boot();
+});
+
+/* ---------- comandos preseteados: se escriben en DOS tecla a tecla ---------- */
+async function tap(k) { if (!ci) return; SFX.key(true); ci.sendKeyEvent(k, true); await sleep(45); if (ci) ci.sendKeyEvent(k, false); SFX.key(false); await sleep(55); }
+async function typeCommand(cmd) {
+  if (!ci || !ready || typing) return;
+  typing = true; setEnabled(false);
+  try { for (const ch of cmd) await tap(ch.charCodeAt(0)); await tap(257); SFX.chatter(2.2); }
+  finally { typing = false; setEnabled(true); screenEl.focus(); }
+}
+$('cmds').addEventListener('click', (e) => {
+  const lnk = e.target.closest('a[data-bbs]');
+  if (lnk) { ensureAudio(); feedKey(lnk.dataset.bbs, true); return; }   /* el enlace abre la sesion real; no se cancela */
+  const b = e.target.closest('button'); if (!b || b.disabled) return;
+  ensureAudio();
+  if (b.dataset.bbs !== undefined) {
+    SFX.key(true);
+    if (liveKeys && live) {
+      const m = { ENTER: '\r', ESC: '\x1b', SPC: ' ' };
+      if (b.dataset.bbs === 'HANG') live.close();
+      else if (b.dataset.bbs === 'KB') { $('mkb').focus(); return; }
+      else live.send(m[b.dataset.bbs] || '');
+      screenEl.focus(); return;
+    }
+    if (b.dataset.bbs === 'KB') { $('mkb').focus(); return; }
+    feedKey(b.dataset.bbs === 'ENTER' ? '\r' : b.dataset.bbs); return;
+  }
+  if (b.dataset.cmd === 'BBS') { bbsStart(); return; }
+  typeCommand(b.dataset.cmd);
+});
+
+/* ---------- teclado ---------- */
+const K = { Escape:256, Enter:257, Tab:258, Backspace:259, Insert:260, Delete:261, ArrowRight:262, ArrowLeft:263, ArrowDown:264, ArrowUp:265,
+  PageUp:266, PageDown:267, Home:268, End:269, CapsLock:280, ScrollLock:281, NumLock:282, Pause:284, Space:32,
+  ShiftLeft:340, ControlLeft:341, AltLeft:342, ShiftRight:344, ControlRight:345, AltRight:346,
+  Minus:45, Equal:61, Backslash:92, BracketLeft:91, BracketRight:93, Semicolon:59, Quote:39, Period:46, Comma:44, Slash:47, Backquote:96,
+  NumpadEnter:335, NumpadAdd:334, NumpadSubtract:333, NumpadMultiply:332, NumpadDivide:331, NumpadDecimal:330, IntlBackslash:348 };
+function code2key(code) {
+  if (K[code] !== undefined) return K[code];
+  let m;
+  if ((m = /^Key([A-Z])$/.exec(code))) return m[1].charCodeAt(0);
+  if ((m = /^Digit([0-9])$/.exec(code))) return 48 + +m[1];
+  if ((m = /^F([0-9]{1,2})$/.exec(code))) return 289 + +m[1];
+  if ((m = /^Numpad([0-9])$/.exec(code))) return 320 + +m[1];
+  return null;
+}
+function keyEvent(e, down) {
+  if (e.metaKey || e.ctrlKey && e.key !== 'Control') { if (!bbsActive) { /* sigue */ } }
+  if (bbsActive && liveKeys) {
+    if (e.target.closest && e.target.closest('a, button, input')) return;
+    if (down && liveKey(e)) { e.preventDefault(); ensureAudio(); SFX.key(true); }
+    else if (!down) SFX.key(false);
+    if (e.key.length === 1 || /^(Enter|Backspace|Tab|Escape|Arrow)/.test(e.key)) e.preventDefault();
+    return;
+  }
+  if (bbsActive) {
+    if (e.target.closest && e.target.closest('a')) return;
+    if (e.key.length === 1 || e.key === 'Enter' || e.key === 'Backspace') e.preventDefault();
+    if (down) { ensureAudio(); SFX.key(true); feedKey(e.key === 'Enter' ? '\r' : e.key === 'Backspace' ? '\b' : e.key); }
+    else SFX.key(false);
+    return;
+  }
+  if (!ci || e.metaKey) return;
+  if (e.target.closest && e.target.closest('button, a')) return;
+  const k = code2key(e.code); if (k === null) return;
+  e.preventDefault(); ensureAudio(); SFX.key(down);
+  if (down && k === 257) SFX.chatter(1.2);
+  ci.sendKeyEvent(k, down);
+}
+addEventListener('keydown', e => keyEvent(e, true));
+addEventListener('keyup', e => keyEvent(e, false));
+screenEl.addEventListener('click', () => { ensureAudio(); screenEl.focus(); });
+
+/* ---------- raton: doble clic en la pantalla lo captura ---------- */
+screenEl.addEventListener('dblclick', () => { if (ci && screenEl.requestPointerLock) { try { const p = screenEl.requestPointerLock(); p && p.catch && p.catch(() => {}); } catch (_) {} } });
+document.addEventListener('mousemove', e => { if (ci && document.pointerLockElement === screenEl) ci.sendMouseRelativeMotion(e.movementX, e.movementY); });
+screenEl.addEventListener('mousedown', e => { if (ci && document.pointerLockElement === screenEl) ci.sendMouseButton(e.button === 2 ? 1 : 0, true); });
+screenEl.addEventListener('mouseup', e => { if (ci && document.pointerLockElement === screenEl) ci.sendMouseButton(e.button === 2 ? 1 : 0, false); });
+screenEl.addEventListener('contextmenu', e => e.preventDefault());
+
+})();
+</script>

@@ -1,0 +1,8 @@
+{
+  "name": "dos486",
+  "productName": "DOS 486",
+  "version": "1.0.0",
+  "description": "PC 486 con FreeDOS 1.3, juegos de los 80 y 90 y BBS reales por telnet",
+  "main": "main.js",
+  "license": "GPL-2.0-or-later"
+}

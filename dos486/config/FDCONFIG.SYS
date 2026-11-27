@@ -1,0 +1,24 @@
+MENUCOLOR=7,1
+MENU ==========================================================
+MENU    DOS 486  -  Arranque
+MENU ==========================================================
+MENU
+MENU    1. Modo juegos  (XMS + UMB, maxima compatibilidad)
+MENU    2. Modo EMS     (JEMMEX: XMS + EMS + VCPI + UMB)
+MENU    3. Modo minimo  (sin controladores de memoria)
+MENU
+MENUDEFAULT=1,5
+
+!LASTDRIVE=Z
+!BUFFERS=20
+!FILES=60
+!STACKS=9,256
+
+12?DOS=HIGH
+12?DOS=UMB
+12?DOSDATA=UMB
+
+1?DEVICE=\FREEDOS\BIN\HIMEMX.EXE
+2?DEVICE=\FREEDOS\BIN\JEMMEX.EXE
+
+SHELLHIGH=\FREEDOS\BIN\COMMAND.COM \FREEDOS\BIN /E:2048 /P=\FDAUTO.BAT

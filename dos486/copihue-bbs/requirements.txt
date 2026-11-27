@@ -1,0 +1,2 @@
+websockets==17.3
+huggingface_hub==2.4.0
