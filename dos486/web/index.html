@@ -627,29 +627,32 @@ $o.WriteLine('C'); $o.Flush()
 try {
   $rb = New-Object byte[] 65536; $rs = New-Object 'ArraySegment[byte]' -ArgumentList @(,$rb); $rt = $ws.ReceiveAsync($rs, $ct)
   $si = [Console]::OpenStandardInput(); $ib = New-Object byte[] 65536; $it = $si.ReadAsync($ib, 0, $ib.Length); $line = New-Object Text.StringBuilder
-  while ($ws.State -eq 'Open') {
+  while ($ws.State -eq 'Open') {   # $it = $null cuando la entrada se cierra: se sigue recibiendo
     $busy = $false
     if ($rt.IsCompleted) {
       $r = $rt.GetAwaiter().GetResult()
-      if ($r.MessageType -eq 'Close') { break }
+      if ($r.MessageType -eq 'Close') { $o.WriteLine('E' + 'el puente cerro la conexion: ' + $ws.CloseStatus + ' ' + $ws.CloseStatusDescription); break }
       if ($r.Count -gt 0) { $o.WriteLine('D' + [Convert]::ToBase64String($rb, 0, $r.Count)); $o.Flush() }
       $rt = $ws.ReceiveAsync($rs, $ct); $busy = $true
     }
-    if ($it.IsCompleted) {
-      $n = $it.Result; if ($n -le 0) { break }
-      [void]$line.Append([Text.Encoding]::ASCII.GetString($ib, 0, $n))
-      $txt = $line.ToString(); $k = $txt.LastIndexOf([char]10)
-      if ($k -ge 0) {
-        foreach ($l in $txt.Substring(0, $k).Split([char]10)) { $l = $l.Trim(); if ($l.Length -gt 0) {
-          $b = [Convert]::FromBase64String($l); $seg = New-Object 'ArraySegment[byte]' -ArgumentList @(,$b)
-          $ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Binary, $true, $ct).GetAwaiter().GetResult() } }
-        [void]$line.Clear(); [void]$line.Append($txt.Substring($k + 1))
+    if ($it -ne $null -and $it.IsCompleted) {
+      $n = 0; if (-not $it.IsFaulted) { $n = $it.Result }
+      if ($n -le 0) { $it = $null } else {
+        [void]$line.Append([Text.Encoding]::ASCII.GetString($ib, 0, $n))
+        $txt = $line.ToString(); $k = $txt.LastIndexOf([char]10)
+        if ($k -ge 0) {
+          foreach ($l in $txt.Substring(0, $k).Split([char]10)) { $l = $l.Trim(); if ($l.Length -gt 0) {
+            $b = [Convert]::FromBase64String($l); $seg = New-Object 'ArraySegment[byte]' -ArgumentList @(,$b)
+            $ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Binary, $true, $ct).GetAwaiter().GetResult() } }
+          [void]$line.Clear(); [void]$line.Append($txt.Substring($k + 1))
+        }
+        $it = $si.ReadAsync($ib, 0, $ib.Length); $busy = $true
       }
-      $it = $si.ReadAsync($ib, 0, $ib.Length); $busy = $true
     }
     if (-not $busy) { Start-Sleep -Milliseconds 10 }
   }
-} catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; $o.WriteLine('E' + $e.Message); $o.Flush() }
+} catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; $o.WriteLine('E' + $e.GetType().Name + ': ' + $e.Message); $o.Flush() }
+if ($ws.State -ne 'Open') { $o.WriteLine('E' + 'estado del WebSocket: ' + $ws.State) }
 $o.WriteLine('X'); $o.Flush()`;
 const PS_BRIDGE = String.raw`$ErrorActionPreference='Stop'
 try { $c = New-Object Net.Sockets.TcpClient; $c.NoDelay = $true; $c.Connect('__HOST__', __PORT__) } catch { [Console]::Out.WriteLine('E' + $_.Exception.Message); exit 1 }
@@ -660,8 +663,9 @@ while ($true) {
   $busy = $false
   while ($s.DataAvailable) { $n = $s.Read($buf, 0, $buf.Length); if ($n -le 0) { break }; $o.WriteLine('D' + [Convert]::ToBase64String($buf, 0, $n)); $busy = $true }
   if ($busy) { $o.Flush() }
-  if ($rt.IsCompleted) {
-    $n = $rt.Result; if ($n -le 0) { break }
+  if ($rt -ne $null -and $rt.IsCompleted) {
+    $n = 0; if (-not $rt.IsFaulted) { $n = $rt.Result }
+    if ($n -le 0) { $rt = $null; continue }
     [void]$line.Append([Text.Encoding]::ASCII.GetString($ib, 0, $n))
     $txt = $line.ToString(); $k = $txt.LastIndexOf([char]10)
     if ($k -ge 0) {
@@ -680,15 +684,17 @@ try:
 except Exception as e:
     print('E' + str(e), flush=True); sys.exit(1)
 print('C', flush=True)
+srcs = [s, sys.stdin]
 while True:
-    r, _, _ = select.select([s, sys.stdin], [], [])
+    r, _, _ = select.select(srcs, [], [])
     if s in r:
         d = s.recv(65536)
         if not d: break
         print('D' + base64.b64encode(d).decode(), flush=True)
     if sys.stdin in r:
         l = sys.stdin.readline()
-        if not l: break
+        if not l:
+            srcs = [s]; continue
         l = l.strip()
         if l: s.sendall(base64.b64decode(l))
 print('X', flush=True)`;
@@ -807,7 +813,10 @@ async function liveSession(tok, host, port, native) {
       if (closed) break;
       await new Promise(r => setTimeout(r, 16));
     }
-    await print('\r\n{15}NO CARRIER{7}\r\n', tok, 3000); await sleep(1200);
+    await print('\r\n{15}NO CARRIER{7}\r\n', tok, 3000);
+    if (err) { for (const e of err.split(' | ')) await print(`{8}  - ${e.replace(/[{}]/g, '')}{7}\r\n`, tok, 3000);
+      statusEl.textContent = 'La conexión se cortó: copia el detalle de la pantalla si necesitas ayuda.'; await getKey(tok, 'V', [['V', 'Volver a DOS']]); }
+    else await sleep(1200);
   } finally {
     liveKeys = false;
     try { if (live) live.close(); } catch (_) {}
