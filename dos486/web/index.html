@@ -287,38 +287,16 @@ let diskPct = 0, diskErr = null;
 const diskPromise = loadDisks(p => { diskPct = p; }).then(b => (bundle = b), e => { diskErr = e; throw e; });
 diskPromise.catch(() => {});
 
-/* ---------- POST de BIOS (simulado) ---------- */
-let lines = [];
-const draw = (tail) => say(lines.join('\n') + (tail || ''));
-const put = (l) => { lines.push(l); draw(); };
-async function post(id) {
-  lines = []; txt.hidden = false; cv.hidden = true; $('off').hidden = true;
-  put(''); put('  <span class="w">DOS486 BIOS v1.0</span>        (C) 1993'); put('');
-  put('  <span class="c">486DX2-66</span> CPU at 66 MHz'); put('');
-  const mi = lines.length; put('');
-  const t0 = performance.now();
-  for (let k = 0; k <= 32768; k = Math.min(32768, k + 1024)) {
-    if (id !== session) return false;
-    lines[mi] = '  Memory Test : ' + String(k).padStart(6) + 'K' + (k === 32768 ? ' OK' : ''); draw();
-    if (k === 32768) break;
-    await sleep(55);
-  }
-  await sleep(300); put('');
-  put('  Floppy drive A: ........... 1.44M, 3.5 in.'); SFX.floppy(); await sleep(900);
-  if (id !== session) return false;
-  put('  IDE Primary Master ........ DOS486 HDD 32MB'); SFX.chatter(0.4); await sleep(450);
-  put('  IDE Primary Slave ......... JUEGOS2 HDD 96MB'); SFX.chatter(0.3); await sleep(400);
-  put('  Sound Blaster 16 .......... A220 I5 D1 H5'); await sleep(350);
-  if (id !== session) return false;
-  SFX.beep(); await sleep(450);
-  put(''); put('  Booting from Hard Disk...');
+/* ---------- espera de discos: pantalla sin senal hasta que arranca la maquina ---------- */
+async function waitDisks(id) {
+  txt.hidden = true; cv.hidden = true; $('off').hidden = true;
   while (!bundle && !diskErr) {
     if (id !== session) return false;
-    statusEl.textContent = 'Leyendo discos… ' + Math.round(diskPct * 100) + ' %';
+    statusEl.textContent = 'Cargando discos… ' + Math.round(diskPct * 100) + ' %';
     SFX.chatter(0.6); await sleep(600);
   }
   if (diskErr) throw diskErr;
-  return performance.now() - t0 >= 0;
+  return true;
 }
 
 /* ---------- arranque ---------- */
@@ -326,14 +304,14 @@ let on = false;
 async function boot() {
   const id = ++session; ready = false; setEnabled(false);
   try {
-    statusEl.textContent = 'POST…';
-    const ok = await post(id); if (!ok || id !== session) return;
-    statusEl.textContent = 'Arrancando FreeDOS…';
+    const ok = await waitDisks(id); if (!ok || id !== session) return;
+    statusEl.textContent = 'BIOS del emulador (DOSBox-X) y arranque de FreeDOS…';
     if (!window.emulators) throw new Error('no se cargó el emulador');
     emulators.pathPrefix = 'emulators/';
     const c = await emulators.dosboxXWorker([bundle]);
     if (id !== session) { c.exit().catch(() => {}); return; }
     ci = c;
+    setTimeout(() => { if (id === session) SFX.floppy(); }, 400);   /* la BIOS revisa la disquetera */
     const bootChatter = setInterval(() => { if (!ready && id === session) SFX.chatter(0.9); else clearInterval(bootChatter); }, 900);
     SFX.chatter(0.9);
     let shown = false; const t0 = performance.now();
@@ -346,7 +324,7 @@ async function boot() {
         for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { data[j] = rgb[i]; data[j + 1] = rgb[i + 1]; data[j + 2] = rgb[i + 2]; data[j + 3] = 255; } }
       if (!data || data.length < w * h * 4) return;
       ctx.putImageData(new ImageData(new Uint8ClampedArray(data.buffer, data.byteOffset, w * h * 4), w, h), 0, 0);
-      if (!shown && performance.now() - t0 > 600) { shown = true; cv.hidden = false; txt.hidden = true; }
+      if (!shown) { shown = true; cv.hidden = false; txt.hidden = true; }
       if (!ready && h === 400 && hasReadyBar(data, w, h)) setTimeout(() => markReady(id), 500);
     });
     ci.events().onSoundPush(pushSound);
@@ -511,7 +489,7 @@ const BBS_LIST = [
   ['vert.synchro.net', 23, ''],
   ['bbs.fozztexx.com', 23, ''],
   ['bbs.electronicchicken.com', 23, ''],
-  ['blackflag.acid.org', 23, ''],
+  ['bbs.bottomlessabyss.net', 2023, ''],
 ];
 function ftelnetUrl(host, port) {
   const q = new URLSearchParams({
@@ -531,7 +509,7 @@ async function bbsSession(tok) {
   term.fg = 7; tClear();
   await print('{15}TERMINAL{7}  -  COM1  57600 baudios  8N1  ANSI\n\n', tok, 3000);
   await typeAT(tok, 'ATZ'); await print('OK\n\n', tok, 3000);
-  let s = '{11}Directorio: BBS reales que siguen en linea (telnet por Internet){7}\n\n';
+  let s = '{11}Directorio: BBS reales en linea (telnet por Internet, probados el 27-11-2026){7}\n\n';
   BBS_LIST.forEach(([h, p, d], i) => { s += `  {14}${i + 1}{7}. {15}${h.padEnd(28)}{8}puerto ${p}{7}\n`; });
   s += '\n{7}Elige un BBS con los botones de abajo. La sesion real se abre en una\n';
   s += 'pestana nueva con el terminal fTelnet (pasa por su proxy publico),\n';

@@ -81,8 +81,9 @@ la imagen gzip, la configuración de DOSBox y el emulador (paquete npm `emulator
 
 La página `web/index.html` tiene solo la pantalla y los comandos preseteados.
 Al pulsar Encender suenan, sintetizados con Web Audio (no son grabaciones), el relé
-de la fuente, el ventilador, el disco duro acelerando, la disquetera buscando y el
-beep del POST; la pantalla muestra un POST de BIOS simulado. Luego arranca FreeDOS
+de la fuente, el ventilador, el disco duro acelerando y la disquetera. La pantalla
+muestra la BIOS real del emulador (DOSBox-X, `fastbioslogo=false`) y los mensajes
+reales del núcleo de FreeDOS. Luego arranca FreeDOS
 real desde el disco C: (sin menús); el disco duro suena al cargar cada programa y cada botón escribe su comando
 en DOS (`DOOM`, `WOLF3D`, `KEEN1`, `TP`...). Los botones se activan cuando
 `FDAUTO.BAT` dibuja una barra sólida que la página detecta en la imagen.
@@ -95,8 +96,8 @@ web/build-web.sh
 cd web/out && python3 -m http.server 8000
 ```
 
-Probado en Chromium (Playwright), pantalla inicial de cada uno: los 12 juegos,
-Turbo Pascal 5.5 y EDIT cargan desde su botón. En una de siete pruebas de ZZT el
+Probado en Chromium (Playwright) el 27-11-2026, pantalla inicial de cada uno:
+los 18 comandos (juegos, demos, Turbo Pascal y EDIT) cargan desde su botón. En una de siete pruebas de ZZT el
 emulador se cayó ("null function") y no se repitió; causa no identificada.
 El núcleo DOSBox clásico (`wdosbox`) no arranca el disco ("read error" en el MBR,
 causa probable: sin soporte de INT 13h extendida); por eso se usa DOSBox-X.
@@ -112,10 +113,12 @@ primera vez y, en el modo terminal, marca por ejemplo:
 ATDT vert.synchro.net
 ```
 
-BBS que siguen activos según lo que recuerdo (los cuatro resuelven en DNS; la
-conexión completa **no se pudo probar** desde el entorno donde se armó esto):
-`vert.synchro.net`, `bbs.fozztexx.com`, `blackflag.acid.org`,
-`bbs.electronicchicken.com`. Comprobado: Telix responde `OK` a `ATZ` con el módem
+BBS probados el 27-11-2026 a través del puente WebSocket de fTelnet (los cuatro
+respondieron con su pantalla de entrada): `vert.synchro.net` (Synchronet),
+`bbs.electronicchicken.com` (Synchronet), `bbs.fozztexx.com` y
+`bbs.bottomlessabyss.net:2023` (Mystic BBS). `blackflag.acid.org` rechazó la
+conexión ("BLOCKED"). La conexión directa por el módem de DOSBox no se pudo
+probar desde el entorno de construcción, que bloquea telnet. Comprobado: Telix responde `OK` a `ATZ` con el módem
 emulado y `ATDT` intenta la conexión.
 
 En la versión web el botón `BBS` muestra un directorio de esos mismos BBS. Cada
@@ -124,8 +127,15 @@ fTelnet (`embed-v2.ftelnet.ca`, terminal web cuyo proxy público convierte
 WebSocket en telnet). La página no puede conectarse por sí misma: el visor bloquea
 las conexiones externas y el emulador en WebAssembly no tiene red. El sonido del
 módem y la línea `CONNECT` de la página son solo ambientación del marcado.
-No se pudo probar la sesión completa porque el entorno de construcción no deja
-pasar WebSocket; sí se comprobó que el enlace abre la página de fTelnet con el BBS.
+Probado: el puente de fTelnet conectó con los cuatro BBS del directorio y devolvió
+sus pantallas de entrada reales.
+
+## LOADFIX
+
+Another World (`AWDEMO.EXE`) viene comprimido con EXEPACK y en QEMU fallaba con
+"Packed file is corrupt" al cargarse en los primeros 64 KB. FreeDOS Lite no trae
+`LOADFIX`, así que `tools/loadfix.asm` es uno mínimo (ensamblado en
+`tools/LOADFIX.COM` con `nasm -f bin`) que se copia a `C:\FREEDOS\BIN`.
 
 ## Estado de pruebas
 

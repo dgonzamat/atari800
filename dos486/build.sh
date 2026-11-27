@@ -99,6 +99,9 @@ for z in "$STAGE"/pk/*.zip; do
   unzip -qo -j "$z" 'BIN/*.EXE' 'BIN/*.COM' 'BIN/*.SYS' -d "$STAGE/fd/FREEDOS/BIN" 2>/dev/null || true
 done
 
+# LOADFIX propio (tools/loadfix.asm): evita "Packed file is corrupt" en EXE con EXEPACK
+cp tools/LOADFIX.COM "$STAGE/fd/FREEDOS/BIN/LOADFIX.COM"
+
 echo "== Configuracion de arranque (fin de linea DOS)"
 mkdir -p "$STAGE/cfg"
 for f in FDCONFIG.SYS FDAUTO.BAT MENU.BAT; do sed 's/$/\r/' "config/$f" > "$STAGE/cfg/$f"; done

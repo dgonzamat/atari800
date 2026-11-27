@@ -99,7 +99,7 @@ PRINCE.EXE
 goto volver
 :another
 cd \GAMES\ANOTHER
-AWDEMO.EXE
+LOADFIX AWDEMO.EXE
 goto volver
 :telix
 cd \PROGRAMS\TELIX

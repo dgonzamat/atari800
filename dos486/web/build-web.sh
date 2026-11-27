@@ -83,6 +83,8 @@ cat > "$OUT/dosbox.conf.txt" <<CONF
 machine=svga_s3
 memsize=32
 startbanner=false
+# pantalla real de la BIOS de DOSBox-X (logo y pausa de 1 s)
+fastbioslogo=false
 [cpu]
 core=normal
 cputype=486
