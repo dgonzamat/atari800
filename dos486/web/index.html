@@ -33,11 +33,21 @@ body {
 .text { position: absolute; inset: 0; margin: 0; padding: 4% 5%; color: var(--phosphor); font: 400 clamp(16px, 3.2vw, 26px)/1.15 var(--f-crt);
   white-space: pre-wrap; overflow: hidden; }
 .text .err { color: #ff6b6b; }
+.text .w { color: #fff; } .text .c { color: #55ffff; }
+.off { position: absolute; inset: 0; display: grid; place-items: center; color: #55575e; font: 500 15px var(--f-body); text-align: center; padding: 16px; }
 .text .blink { animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 
 .bar { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .bar .status { color: var(--dim); min-width: 0; }
+.bar .left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hdd { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #3b2f12; box-shadow: inset 0 1px 1px rgba(0,0,0,.6); }
+.hdd.on { background: #ffb43a; box-shadow: 0 0 8px #ffb43a; }
+.pwr { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #14301b; }
+.pwr.on { background: #4cff6a; box-shadow: 0 0 8px #4cff6a; }
+.bar .acts { display: flex; gap: 8px; }
+.bar button#power { border-color: #4cff6a; color: #4cff6a; }
+.bar button[aria-pressed="true"] { color: var(--dim); }
 .bar button { font: 500 13px var(--f-body); color: var(--ink); background: none; border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
 .bar button:hover { border-color: var(--dim); }
 
@@ -57,12 +67,13 @@ button:focus-visible { outline: 2px solid var(--key); outline-offset: 2px; }
 <main class="wrap">
   <div class="screen" id="screen" tabindex="0" aria-label="Pantalla de DOS">
     <canvas id="cv" width="720" height="400" hidden></canvas>
-    <pre class="text" id="txt"></pre>
+    <pre class="text" id="txt" hidden></pre>
+    <div class="off" id="off">Pulsa Encender</div>
   </div>
 
   <div class="bar">
-    <span class="status" id="status">Cargando…</span>
-    <button id="reset" type="button">Reiniciar</button>
+    <span class="left"><i class="pwr" id="pwr" title="Encendido"></i><i class="hdd" id="hdd" title="Disco duro"></i><span class="status" id="status">Apagado</span></span>
+    <span class="acts"><button id="snd" type="button" aria-pressed="false">Sonido: sí</button><button id="power" type="button">Encender</button></span>
   </div>
 
   <div class="cmds" id="cmds"></div>
@@ -75,11 +86,11 @@ const CMDS = [
   ['DOOM', 'DOOM 1.9 (1993)'], ['WOLF3D', 'Wolfenstein 3D (1992)'], ['DUKE3D', 'Duke Nukem 3D (1996)'], ['DUKE2', 'Duke Nukem II (1993)'],
   ['HERETIC', 'Heretic (1994)'], ['KEEN1', 'Commander Keen 1 (1990)'], ['KEEN4', 'Commander Keen 4 (1991)'], ['DAVE', 'Dangerous Dave (1990)'],
   ['SCORCH', 'Scorched Earth (1991)'], ['PINBALL', 'Epic Pinball (1993)'], ['SKYROADS', 'SkyRoads (1993)'], ['ZZT', 'ZZT (1991)'],
-  ['TP', 'Turbo Pascal 5.5 (1989)'], ['EDIT', 'Editor de texto'],
+  ['LEMMINGS', 'Lemmings demo (1991)'], ['PRINCE', 'Prince of Persia demo (1990)'], ['STUNTS', 'Stunts demo (1990)'], ['TP', 'Turbo Pascal 5.5 (1989)'], ['EDIT', 'Editor de texto'],
 ];
 const $ = (id) => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d'), txt = $('txt'), screenEl = $('screen'), statusEl = $('status');
-let ci = null, bundle = null, ready = false, typing = false, audio = null, nextT = 0, session = 0;
+let ci = null, bundle = null, ready = false, typing = false, session = 0;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 $('cmds').innerHTML = CMDS.map(([c, t]) => `<button type="button" data-cmd="${c}" disabled><span class="c">${c}</span><span class="t">${t}</span></button>`).join('');
@@ -129,15 +140,13 @@ function storeZip(entries) {
   for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
 }
-async function loadDisks() {
+async function loadDisks(onp) {
   let pc = 0, pd = 0;
-  const show = () => say(`Cargando disco C: ${String(Math.round(pc * 100)).padStart(3)}%\nCargando disco D: ${String(Math.round(pd * 100)).padStart(3)}%<span class="blink">_</span>`);
-  show();
+  const show = () => onp((pc + pd) / 2);
   const raw = await Promise.all([
     fetchWithProgress('disk-c.img.gz.txt', p => { pc = p; show(); }),
     fetchWithProgress('disk-d.img.gz.txt', p => { pd = p; show(); }),
   ]);
-  say('Preparando discos...<span class="blink">_</span>');
   const disks = await Promise.all(raw.map(unpack));
   const conf = await (await fetch('dosbox.conf.txt')).text();
   return storeZip([['.jsdos/dosbox.conf', new TextEncoder().encode(conf)], ['c.img', disks[0]], ['d.img', disks[1]]]);
@@ -155,36 +164,156 @@ function hasReadyBar(data, w, h) {
 }
 function markReady(id) {
   if (ready || id !== session) return;
-  ready = true; setEnabled(true); statusEl.textContent = 'Listo. Un clic escribe el comando en DOS. Sal del programa abierto antes de cargar otro.';
+  ready = true; setEnabled(true); statusEl.textContent = 'Listo. Un clic escribe el comando en DOS; sal del programa abierto antes de cargar otro.';
 }
 
-/* ---------- audio (empieza con el primer clic o tecla) ---------- */
-function wakeAudio() {
-  if (audio) { if (audio.state === 'suspended') audio.resume().catch(() => {}); return; }
-  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { audio = null; }
+/* ---------- sonidos del 486 (sintetizados, no son grabaciones) ---------- */
+let audio = null, master = null, nextT = 0, soundOn = true, hum = [];
+const hddLed = $('hdd');
+function ensureAudio() {
+  if (!audio) {
+    try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { audio = null; return; }
+    master = audio.createGain(); master.gain.value = soundOn ? 1 : 0; master.connect(audio.destination);
+  }
+  if (audio.state === 'suspended') audio.resume().catch(() => {});
 }
+function noiseBuffer(sec) {
+  const b = audio.createBuffer(1, Math.floor(audio.sampleRate * sec), audio.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+}
+function env(g, t, peak, a, d) { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + a + d); }
+function thump(t, f, dur, peak) {
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * 0.5, t + dur);
+  env(g, t, peak, 0.004, dur); o.connect(g).connect(master); o.start(t); o.stop(t + dur + 0.05);
+}
+function click(t, freq, dur, peak) {
+  const n = audio.createBufferSource(); n.buffer = noiseBuffer(dur + 0.02);
+  const f = audio.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = 1.4;
+  const g = audio.createGain(); env(g, t, peak, 0.001, dur);
+  n.connect(f).connect(g).connect(master); n.start(t); n.stop(t + dur + 0.03);
+}
+const SFX = {
+  powerOn() {   /* rele de la fuente, ventilador y disco duro acelerando */
+    if (!audio) return; const t = audio.currentTime + 0.02;
+    thump(t, 60, 0.22, 0.5); click(t, 900, 0.03, 0.25);
+    const fan = audio.createBufferSource(); fan.buffer = noiseBuffer(2); fan.loop = true;
+    const lp = audio.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 420; lp.Q.value = 0.6;
+    const fg = audio.createGain(); fg.gain.setValueAtTime(0.0001, t); fg.gain.exponentialRampToValueAtTime(0.06, t + 1.4);
+    fan.connect(lp).connect(fg).connect(master); fan.start(t);
+    const hm = audio.createOscillator(); hm.type = 'triangle'; hm.frequency.value = 100;
+    const hg = audio.createGain(); hg.gain.setValueAtTime(0.0001, t); hg.gain.exponentialRampToValueAtTime(0.008, t + 1);
+    hm.connect(hg).connect(master); hm.start(t);
+    const sp = audio.createOscillator(); sp.type = 'sawtooth';
+    sp.frequency.setValueAtTime(25, t + 0.3); sp.frequency.exponentialRampToValueAtTime(90, t + 3.6);
+    const bp = audio.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.setValueAtTime(300, t); bp.frequency.exponentialRampToValueAtTime(1800, t + 3.6); bp.Q.value = 3;
+    const sg = audio.createGain(); sg.gain.setValueAtTime(0.0001, t + 0.3); sg.gain.exponentialRampToValueAtTime(0.05, t + 2.2); sg.gain.exponentialRampToValueAtTime(0.01, t + 4.5);
+    sp.connect(bp).connect(sg).connect(master); sp.start(t + 0.3);
+    hum = [[fan, fg], [hm, hg], [sp, sg]];
+  },
+  powerOff() {
+    if (!audio) return; const t = audio.currentTime;
+    for (const [src, g] of hum) { g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(Math.max(g.gain.value, 0.0001), t); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2); src.stop(t + 1.3); }
+    hum = []; thump(t, 50, 0.15, 0.3);
+  },
+  floppy() {    /* busqueda del disquetera A: — el "grrr-grrr" del POST */
+    if (!audio) return; let t = audio.currentTime + 0.02;
+    thump(t, 140, 0.05, 0.25);
+    for (let pass = 0; pass < 2; pass++) {
+      const o = audio.createOscillator(); o.type = 'square'; o.frequency.value = pass ? 170 : 150;
+      const f = audio.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1300; f.Q.value = 2.5;
+      const g = audio.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.12, t + 0.01);
+      g.gain.setValueAtTime(0.12, t + 0.24); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.27);
+      o.connect(f).connect(g).connect(master); o.start(t); o.stop(t + 0.3);
+      t += 0.38;
+    }
+    thump(t, 120, 0.05, 0.2);
+  },
+  beep() {      /* beep del POST por el altavoz del PC */
+    if (!audio) return; const t = audio.currentTime + 0.02;
+    const o = audio.createOscillator(); o.type = 'square'; o.frequency.value = 990;
+    const g = audio.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 0.005);
+    g.gain.setValueAtTime(0.06, t + 0.16); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+    o.connect(g).connect(master); o.start(t); o.stop(t + 0.2);
+  },
+  chatter(seconds) {   /* cabezal del disco duro buscando, con su LED */
+    if (!audio) return; const t0 = audio.currentTime; let t = t0 + 0.02;
+    while (t < t0 + seconds) {
+      if (Math.random() < 0.85) { click(t, 2600 + Math.random() * 1400, 0.012, 0.22 + Math.random() * 0.15); thump(t, 170, 0.025, 0.08); }
+      const ms = (t - t0) * 1000; setTimeout(() => { hddLed.classList.add('on'); setTimeout(() => hddLed.classList.remove('on'), 45); }, ms);
+      t += 0.025 + Math.random() * (Math.random() < 0.2 ? 0.35 : 0.09);
+    }
+  },
+};
 function pushSound(samples) {
   if (!audio || audio.state !== 'running' || !ci) return;
   const now = audio.currentTime;
   if (nextT < now + 0.02) nextT = now + 0.05;
   if (nextT - now > 0.35) return;
   const buf = audio.createBuffer(1, samples.length, ci.soundFrequency() || 44100); buf.copyToChannel(samples, 0);
-  const src = audio.createBufferSource(); src.buffer = buf; src.connect(audio.destination); src.start(nextT);
+  const src = audio.createBufferSource(); src.buffer = buf; src.connect(master); src.start(nextT);
   nextT += buf.duration;
+}
+$('snd').addEventListener('click', () => {
+  soundOn = !soundOn; $('snd').textContent = soundOn ? 'Sonido: sí' : 'Sonido: no'; $('snd').setAttribute('aria-pressed', String(!soundOn));
+  if (master) master.gain.value = soundOn ? 1 : 0;
+});
+
+/* ---------- discos: se descargan en cuanto abre la pagina ---------- */
+let diskPct = 0, diskErr = null;
+const diskPromise = loadDisks(p => { diskPct = p; }).then(b => (bundle = b), e => { diskErr = e; throw e; });
+diskPromise.catch(() => {});
+
+/* ---------- POST de BIOS (simulado) ---------- */
+let lines = [];
+const draw = (tail) => say(lines.join('\n') + (tail || ''));
+const put = (l) => { lines.push(l); draw(); };
+async function post(id) {
+  lines = []; txt.hidden = false; cv.hidden = true; $('off').hidden = true;
+  put(''); put('  <span class="w">DOS486 BIOS v1.0</span>        (C) 1993'); put('');
+  put('  <span class="c">486DX2-66</span> CPU at 66 MHz'); put('');
+  const mi = lines.length; put('');
+  const t0 = performance.now();
+  for (let k = 0; k <= 32768; k = Math.min(32768, k + 1024)) {
+    if (id !== session) return false;
+    lines[mi] = '  Memory Test : ' + String(k).padStart(6) + 'K' + (k === 32768 ? ' OK' : ''); draw();
+    if (k === 32768) break;
+    await sleep(55);
+  }
+  await sleep(300); put('');
+  put('  Floppy drive A: ........... 1.44M, 3.5 in.'); SFX.floppy(); await sleep(900);
+  if (id !== session) return false;
+  put('  IDE Primary Master ........ DOS486 HDD 32MB'); SFX.chatter(0.4); await sleep(450);
+  put('  IDE Primary Slave ......... JUEGOS2 HDD 32MB'); SFX.chatter(0.3); await sleep(400);
+  put('  Sound Blaster 16 .......... A220 I5 D1 H5'); await sleep(350);
+  if (id !== session) return false;
+  SFX.beep(); await sleep(450);
+  put(''); put('  Booting from Hard Disk...');
+  while (!bundle && !diskErr) {
+    if (id !== session) return false;
+    statusEl.textContent = 'Leyendo discos… ' + Math.round(diskPct * 100) + ' %';
+    SFX.chatter(0.6); await sleep(600);
+  }
+  if (diskErr) throw diskErr;
+  return performance.now() - t0 >= 0;
 }
 
 /* ---------- arranque ---------- */
+let on = false;
 async function boot() {
   const id = ++session; ready = false; setEnabled(false);
   try {
-    if (!bundle) { statusEl.textContent = 'Cargando discos…'; bundle = await loadDisks(); }
-    if (id !== session) return;
-    statusEl.textContent = 'Arrancando FreeDOS…'; say('Arrancando FreeDOS...<span class="blink">_</span>');
+    statusEl.textContent = 'POST…';
+    const ok = await post(id); if (!ok || id !== session) return;
+    statusEl.textContent = 'Arrancando FreeDOS…';
     if (!window.emulators) throw new Error('no se cargó el emulador');
     emulators.pathPrefix = 'emulators/';
     const c = await emulators.dosboxXWorker([bundle]);
     if (id !== session) { c.exit().catch(() => {}); return; }
     ci = c;
+    const bootChatter = setInterval(() => { if (!ready && id === session) SFX.chatter(0.9); else clearInterval(bootChatter); }, 900);
+    SFX.chatter(0.9);
     let shown = false; const t0 = performance.now();
     ci.events().onFrame((rgb, rgba) => {
       if (id !== session || !ci) return;
@@ -207,25 +336,34 @@ async function boot() {
     statusEl.textContent = 'Error al iniciar.';
   }
 }
-async function reset() {
+async function shutdown() {
   session++; ready = false; setEnabled(false);
   const c = ci; ci = null; if (c) { try { await c.exit(); } catch (_) {} }
-  cv.hidden = true; txt.hidden = false;
-  boot();
+  cv.hidden = true;
 }
-$('reset').addEventListener('click', () => { wakeAudio(); reset(); });
+$('power').addEventListener('click', async () => {
+  ensureAudio();
+  if (!on) {
+    on = true; $('pwr').classList.add('on'); $('power').textContent = 'Apagar'; $('off').hidden = true;
+    SFX.powerOn(); boot();
+  } else {
+    on = false; await shutdown(); SFX.powerOff();
+    $('pwr').classList.remove('on'); $('power').textContent = 'Encender';
+    txt.hidden = true; $('off').hidden = false; statusEl.textContent = 'Apagado';
+  }
+});
 
 /* ---------- comandos preseteados: se escriben en DOS tecla a tecla ---------- */
 async function tap(k) { if (!ci) return; ci.sendKeyEvent(k, true); await sleep(35); if (ci) ci.sendKeyEvent(k, false); await sleep(35); }
 async function typeCommand(cmd) {
   if (!ci || !ready || typing) return;
   typing = true; setEnabled(false);
-  try { for (const ch of cmd) await tap(ch.charCodeAt(0)); await tap(257); }
+  try { for (const ch of cmd) await tap(ch.charCodeAt(0)); await tap(257); SFX.chatter(2.2); }
   finally { typing = false; setEnabled(true); screenEl.focus(); }
 }
 $('cmds').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b || b.disabled) return;
-  wakeAudio(); typeCommand(b.dataset.cmd);
+  ensureAudio(); typeCommand(b.dataset.cmd);
 });
 
 /* ---------- teclado ---------- */
@@ -247,12 +385,13 @@ function keyEvent(e, down) {
   if (!ci || e.metaKey) return;
   if (e.target.closest && e.target.closest('button, a')) return;
   const k = code2key(e.code); if (k === null) return;
-  e.preventDefault(); wakeAudio();
+  e.preventDefault(); ensureAudio();
+  if (down && k === 257) SFX.chatter(1.2);
   ci.sendKeyEvent(k, down);
 }
 addEventListener('keydown', e => keyEvent(e, true));
 addEventListener('keyup', e => keyEvent(e, false));
-screenEl.addEventListener('click', () => { wakeAudio(); screenEl.focus(); });
+screenEl.addEventListener('click', () => { ensureAudio(); screenEl.focus(); });
 
 /* ---------- raton: doble clic en la pantalla lo captura ---------- */
 screenEl.addEventListener('dblclick', () => { if (ci && screenEl.requestPointerLock) { try { const p = screenEl.requestPointerLock(); p && p.catch && p.catch(() => {}); } catch (_) {} } });
@@ -261,6 +400,5 @@ screenEl.addEventListener('mousedown', e => { if (ci && document.pointerLockElem
 screenEl.addEventListener('mouseup', e => { if (ci && document.pointerLockElement === screenEl) ci.sendMouseButton(e.button === 2 ? 1 : 0, false); });
 screenEl.addEventListener('contextmenu', e => e.preventDefault());
 
-boot();
 })();
 </script>

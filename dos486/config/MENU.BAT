@@ -14,14 +14,18 @@ echo    3. Duke Nukem 3D (1996)        8. Scorched Earth (1991)
 echo    4. Duke Nukem II (1993)        9. Epic Pinball (1993)
 echo    5. Commander Keen 1 (1990)     A. SkyRoads (1993)
 echo                                   B. ZZT (1991)
-echo                                   C. Heretic (1994)
+echo    F. Lemmings demo (1991)        C. Heretic (1994)
+echo    G. Prince of Persia demo       H. Stunts demo (1990)
 echo   PROGRAMAS
 echo    D. Turbo Pascal 5.5 (1989)     E. Editor de texto (EDIT)
 echo.
 echo    Q. Salir a la linea de comandos DOS
 echo.
-choice /c:123456789ABCDEQ /n "  Elige una opcion: "
-if errorlevel 15 goto salir
+choice /c:123456789ABCDEFGHQ /n "  Elige una opcion: "
+if errorlevel 18 goto salir
+if errorlevel 17 goto stunts
+if errorlevel 16 goto prince
+if errorlevel 15 goto lemmings
 if errorlevel 14 goto edit
 if errorlevel 13 goto tp
 if errorlevel 12 goto heretic
@@ -82,6 +86,18 @@ goto volver
 :zzt
 cd \GAMES\ZZT
 ZZT.EXE
+goto volver
+:prince
+cd \GAMES\PRINCE
+PRINCE.EXE
+goto volver
+:stunts
+cd \GAMES\STUNTS
+LOAD.EXE /u MCGA /ssb
+goto volver
+:lemmings
+cd \GAMES\LEMMINGS
+call VGALEMMI.BAT /V
 goto volver
 :heretic
 %G2%

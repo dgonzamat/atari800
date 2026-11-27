@@ -37,6 +37,9 @@ Hardware emulado: CPU 486, 32 MB RAM, VGA Cirrus (QEMU), Sound Blaster 16
 | A | SkyRoads | `SkyRoads` |
 | B | ZZT 3.2 (shareware) | `ZztByEpicMegagames` |
 | C | Heretic (shareware) | `hereticsw` |
+| F | Lemmings (demo oficial, 4 niveles; introducción en alemán) | `Lemmings_1020` |
+| G | Prince of Persia (demo oficial) | `PrinceOfPersia_479` |
+| H | Stunts (demo oficial) | `stunts_demo_disk` |
 | D | Turbo Pascal 5.5 | `TurboPascal55` |
 | E | EDIT (editor de FreeDOS) | incluido en FreeDOS |
 
@@ -44,8 +47,8 @@ Hardware emulado: CPU 486, 32 MB RAM, VGA Cirrus (QEMU), Sound Blaster 16
 `build.sh`. Se eligieron títulos publicados como shareware/freeware según su
 ficha en archive.org, dato que no está verificado de forma independiente: revisa
 la licencia de cada uno antes de redistribuir la imagen resultante.
-**Stunts no está incluido:** es un juego comercial y no hay versión shareware ni
-demo oficial; solo existen copias completas sin licencia.
+**Carmageddon no está incluido:** su demo exige un Pentium 90 con 8–16 MB de RAM y
+ocupa 40 MB; en el 486 emulado no es jugable.
 
 ## Uso
 
@@ -73,8 +76,11 @@ Cambia la velocidad en DOSBox con `Ctrl+F11` / `Ctrl+F12`. Dentro de DOS,
 la imagen gzip, la configuración de DOSBox y el emulador (paquete npm `emulators`
 8.5.3, núcleo DOSBox-X en WebAssembly, verificado por SHA-256).
 
-La página `web/index.html` tiene solo la pantalla y los comandos preseteados:
-arranca FreeDOS real desde el disco C: (sin menús) y cada botón escribe su comando
+La página `web/index.html` tiene solo la pantalla y los comandos preseteados.
+Al pulsar Encender suenan, sintetizados con Web Audio (no son grabaciones), el relé
+de la fuente, el ventilador, el disco duro acelerando, la disquetera buscando y el
+beep del POST; la pantalla muestra un POST de BIOS simulado. Luego arranca FreeDOS
+real desde el disco C: (sin menús); el disco duro suena al cargar cada programa y cada botón escribe su comando
 en DOS (`DOOM`, `WOLF3D`, `KEEN1`, `TP`...). Los botones se activan cuando
 `FDAUTO.BAT` dibuja una barra sólida que la página detecta en la imagen.
 

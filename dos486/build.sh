@@ -32,6 +32,9 @@ epicpin.zip|$A/epic_pinball_11/epic_pinball.zip|b9965ed6a7a85e7746c57cdb89107fbf
 skyroads.zip|$A/SkyRoads/skyroads.zip|24762fe14196a642224288fe2063c9d0c0033be9c5b4b2f97fded09390803ee4|GAMES/SKYROADS
 zzt.zip|$A/ZztByEpicMegagames/ZztV3.2sw1991epicMegagamesInc.actionAdventureRole-playingrpg.zip|9b2b9504d76d0156404a2721824ee53c240abf3d874ac2655df3ade9bd205ff1|GAMES/ZZT
 heretic.zip|$A/hereticsw/hereticsw.zip|6333fc7e4d9c742c04da7469169643949d10d3d624ec270ed9347d6081381d98|GAMES/HERETIC
+lemmings.zip|$A/Lemmings_1020/lemmings.zip|85799eaf5dcfc80ef86900f9aa4567adbc9cc4e60111a96522b84ab2aa3e2d45|GAMES/LEMMINGS
+prince.zip|$A/PrinceOfPersia_479/pop1.ZIP|c2482998c6e893594166a9b0b4f9ac9335251fe4d5e38939315997a308906723|GAMES/PRINCE
+stunts.zip|$A/stunts_demo_disk/stunts_demo_disk.zip|f502478813f572b0027b52d81c908ff0fadd956517b54d15ce7be560525ed613|GAMES/STUNTS
 tp55.zip|$A/TurboPascal55/tp55.zip|a04ff65555f88cd7714a11362c6f625f254932679ad5623b207015893ef638b6|PROGRAMS/TP55
 LIST
 )
@@ -58,6 +61,14 @@ done <<< "$SOURCES"
 sed -i 's/^BlasterInterrupt = 7/BlasterInterrupt = 5/' "$STAGE/GAMES/DUKE3D/DUKE3D.CFG"
 # Heretic igual: IRQ 7 -> 5
 sed -i 's/^snd_sbirq\([[:space:]]*\)7/snd_sbirq\15/' "$STAGE/GAMES/HERETIC/HERETIC.CFG"
+
+# Lemmings viene dentro de una subcarpeta
+if [ -d "$STAGE/GAMES/LEMMINGS/LEMMINGS" ]; then mv "$STAGE/GAMES/LEMMINGS/LEMMINGS"/* "$STAGE/GAMES/LEMMINGS/" && rmdir "$STAGE/GAMES/LEMMINGS/LEMMINGS"; fi
+
+# Stunts viene dentro de dos subcarpetas
+if [ -d "$STAGE/GAMES/STUNTS/stunts_demo_disk/stunts_demo_disk" ]; then
+  mv "$STAGE/GAMES/STUNTS/stunts_demo_disk/stunts_demo_disk"/* "$STAGE/GAMES/STUNTS/" && rm -rf "$STAGE/GAMES/STUNTS/stunts_demo_disk"
+fi
 
 # Turbo Pascal: Disk1 va en TP55, Disk2 en TP55\DISK2
 mv "$STAGE/PROGRAMS/TP55/Disk1"/* "$STAGE/PROGRAMS/TP55/" && rmdir "$STAGE/PROGRAMS/TP55/Disk1"
