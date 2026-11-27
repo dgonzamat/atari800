@@ -113,10 +113,26 @@ primera vez y, en el modo terminal, marca por ejemplo:
 ATDT vert.synchro.net
 ```
 
-BBS probados el 27-11-2026 a través del puente WebSocket de fTelnet (los cuatro
-respondieron con su pantalla de entrada): `vert.synchro.net` (Synchronet),
-`bbs.electronicchicken.com` (Synchronet), `bbs.fozztexx.com` y
-`bbs.bottomlessabyss.net:2023` (Mystic BBS). `blackflag.acid.org` rechazó la
+BBS probados el 27-11-2026 a través del puente WebSocket de fTelnet (todos
+respondieron con su pantalla de entrada):
+
+| Grupo | BBS | Dirección |
+|---|---|---|
+| Internacional | Vertrauen | `vert.synchro.net` |
+| Internacional | RetroBattlestations | `bbs.fozztexx.com` |
+| Internacional | Electronic Chicken | `bbs.electronicchicken.com` |
+| Internacional | Bottomless Abyss | `bbs.bottomlessabyss.net:2023` |
+| Uruguay (.uy) | Undernet BBS | `undernet.uy` |
+| Argentina (.ar) | Ragnarok's BBS | `crm.bertonmoreno.com.ar:23021` |
+| Brasil (.br) | Mutiny Brazil | `bbs.retronet.com.br:2323` |
+| Brasil (.br) | Soft Solutions | `bbs.softsolutions.net.br:2023` |
+| Brasil (.br) | Clube da Insonia | `bbs.conf.eti.br` |
+| España (castellano) | HispaMSX BBS | `bbs.hispamsx.org` |
+| España (castellano) | Zruspa's BBS | `bbs.zruspas.org` |
+
+El país de los latinoamericanos se deduce del dominio. No se encontró ningún BBS
+chileno activo: el Telnet BBS Guide no lista ninguno y el único hallado (Araucaria
+BBS, Ñuñoa) aparece en una lista de 2002 solo con número telefónico. `blackflag.acid.org` rechazó la
 conexión ("BLOCKED"). La conexión directa por el módem de DOSBox no se pudo
 probar desde el entorno de construcción, que bloquea telnet. Comprobado: Telix responde `OK` a `ATZ` con el módem
 emulado y `ATDT` intenta la conexión.

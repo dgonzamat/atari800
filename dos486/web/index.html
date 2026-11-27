@@ -517,12 +517,21 @@ function modemSound() {
 /* La pagina no puede abrir conexiones telnet: el visor bloquea la red. La sesion real
    se abre en una pestana nueva con fTelnet (ftelnet.ca), un terminal web cuyo proxy
    publico convierte WebSocket en telnet. Lista de BBS segun lo conocido; pueden cambiar. */
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
+/* [tecla, host, puerto, nombre, pais, grupo]. Todos respondieron por telnet el 27-11-2026.
+   El pais de los latinoamericanos se deduce de su dominio (.uy, .ar, .br). */
 const BBS_LIST = [
-  ['vert.synchro.net', 23, ''],
-  ['bbs.fozztexx.com', 23, ''],
-  ['bbs.electronicchicken.com', 23, ''],
-  ['bbs.bottomlessabyss.net', 2023, ''],
+  ['1', 'vert.synchro.net', 23, 'Vertrauen', '', 'Internacional'],
+  ['2', 'bbs.fozztexx.com', 23, 'RetroBattlestations', '', 'Internacional'],
+  ['3', 'bbs.electronicchicken.com', 23, 'Electronic Chicken', '', 'Internacional'],
+  ['4', 'bbs.bottomlessabyss.net', 2023, 'Bottomless Abyss', '', 'Internacional'],
+  ['5', 'undernet.uy', 23, 'Undernet BBS', 'Uruguay', 'Latinoamerica'],
+  ['6', 'crm.bertonmoreno.com.ar', 23021, "Ragnarok's BBS", 'Argentina', 'Latinoamerica'],
+  ['7', 'bbs.retronet.com.br', 2323, 'Mutiny Brazil', 'Brasil', 'Latinoamerica'],
+  ['8', 'bbs.softsolutions.net.br', 2023, 'Soft Solutions', 'Brasil', 'Latinoamerica'],
+  ['9', 'bbs.conf.eti.br', 23, 'Clube da Insonia', 'Brasil', 'Latinoamerica'],
+  ['A', 'bbs.hispamsx.org', 23, 'HispaMSX BBS', 'Espana', 'En castellano (Espana)'],
+  ['B', 'bbs.zruspas.org', 23, "Zruspa's BBS", 'Espana', 'En castellano (Espana)'],
 ];
 function ftelnetUrl(host, port) {
   const q = new URLSearchParams({
@@ -864,20 +873,23 @@ async function bbsSession(tok) {
   term.fg = 7; tClear();
   await print(`{15}TERMINAL{7}  -  COM1  57600 baudios  8N1  ANSI   {8}(DOS 486 ${APP_VERSION}${desktopApi ? ', app: ' + (desktopPlatform || '?') : ''}){7}\n\n`, tok, 3000);
   await typeAT(tok, 'ATZ'); await print('OK\n\n', tok, 3000);
-  let s = '{11}Directorio: BBS reales en linea (telnet por Internet, probados el 27-11-2026){7}\n\n';
-  BBS_LIST.forEach(([h, p, d], i) => { s += `  {14}${i + 1}{7}. {15}${h.padEnd(28)}{8}puerto ${p}{7}\n`; });
+  let s = '{11}BBS reales en linea (telnet por Internet, probados el 27-11-2026){7}\n';
+  let grp = '';
+  for (const [key, h, p, name, country, g] of BBS_LIST) {
+    if (g !== grp) { grp = g; s += `{9} ${g}{7}\n`; }
+    s += `  {14}${key}{7}. {15}${name.padEnd(21)}{8}${(h + ":" + p).padEnd(31)}{7}${country}\n`;
+  }
   const NATIVE = await nativeAvailable();
   const INSCREEN = NATIVE || STANDALONE;
-  if (NATIVE) s += '\n{7}Elige un BBS (1-4). La app abre la conexion telnet directamente desde tu PC\n(la primera vez Claude te pide permiso de acceso total) y la muestra aqui.\n\n{8}[V] volver a DOS{7}\n';
-  else if (STANDALONE) s += '\n{7}Elige un BBS (1-4). La conexion es real: telnet a traves del puente\nWebSocket publico de fTelnet, dentro de esta misma pantalla.\n\n{8}[V] volver a DOS{7}\n';
-  else { s += '\n{7}Elige un BBS con los botones de abajo. Dentro de claude.ai la pagina no\n';
-    s += 'tiene acceso a la red: la sesion real se abre en una pestana nueva con\n';
-    s += 'fTelnet. Abierta directamente en tu navegador, se ve en esta pantalla.\n\n{8}[V] volver a DOS{7}\n'; }
+  if (NATIVE) s += '\n{7}Elige un BBS. La app abre la conexion telnet desde tu PC y la muestra aqui.\n{8}[V] volver a DOS{7}\n';
+  else if (STANDALONE) s += '\n{7}Elige un BBS. Conexion real por el puente WebSocket de fTelnet, en esta pantalla.\n{8}[V] volver a DOS{7}\n';
+  else s += '\n{7}Elige un BBS abajo. Dentro de claude.ai se abre en una pestana nueva (fTelnet).\n{8}[V] volver a DOS{7}\n';
   await print(s, tok, 3000);
-  setHotkeys([...BBS_LIST.map(([h, p], i) => [String(i + 1), h, INSCREEN ? null : ftelnetUrl(h, p)]), ['V', 'Volver a DOS']]);
-  const k = await new Promise(r => { keyWaiter = { resolve: r, allowed: 'V1234', linkOnly: !INSCREEN }; });
+  setHotkeys([...BBS_LIST.map(([key, h, p, name, country]) => [key, name + (country ? ' · ' + country : ''), INSCREEN ? null : ftelnetUrl(h, p)]), ['V', 'Volver a DOS']]);
+  const keys = 'V' + BBS_LIST.map(b => b[0]).join('');
+  const k = await new Promise(r => { keyWaiter = { resolve: r, allowed: keys, linkOnly: !INSCREEN }; });
   if (k === 'V') return;
-  const [host, port] = BBS_LIST[+k - 1];
+  const [, host, port] = BBS_LIST.find(b => b[0] === k);
   if (INSCREEN) { await liveSession(tok, host, port, NATIVE); return; }
   let hung = false;
   const hang = getKey(tok, 'V', [['V', 'Colgar y volver a DOS']]).then(() => { hung = true; });
