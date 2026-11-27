@@ -153,6 +153,21 @@ módem y la línea `CONNECT` de la página son solo ambientación del marcado.
 Probado: el puente de fTelnet conectó con los cuatro BBS del directorio y devolvió
 sus pantallas de entrada reales.
 
+## Copihue BBS (BBS chileno dentro de DOS 486)
+
+Tecla `C` del directorio de BBS. Un BBS propio que vive en la base de datos
+compartida del artefacto (capacidad `db`), no un servidor telnet:
+
+- alias por persona (`handles/<id>`; cada quien escribe solo el suyo),
+- cuatro foros (General, Juegos, Computación retro, Cosas de Chile) en `msgs`,
+  con borrado para el autor y el SysOp (dueño del artefacto),
+- quién está conectado y chat en vivo con la capacidad `room` (el chat no se guarda),
+- usuarios registrados y una pantalla "Acerca de".
+
+Parte vacío: no trae mensajes ni usuarios inventados. Pueden escribir quienes
+tengan el artefacto compartido como Contribuidor o más; con acceso de solo
+lectura se entra como visitante. Probado con base de datos y sala simuladas.
+
 ## App instalada desde Claude (conexión directa)
 
 El artefacto declara la capacidad `desktop` y el permiso `full-access`. Si se

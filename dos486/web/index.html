@@ -466,7 +466,7 @@ function setHotkeys(list) {
 function feedKey(k, fromLink) {
   if (!keyWaiter) return;
   const w = keyWaiter;
-  if (w.linkOnly && k !== 'V' && k !== 'v' && !fromLink) return;   /* un BBS solo se elige con su enlace */
+  if (w.linkOnly && !/^[vVcC]$/.test(k) && !fromLink) return;   /* un BBS por telnet solo se elige con su enlace */
   if (w.line) {
     if (k === '\r') { keyWaiter = null; tPut('\n'); tRender(); w.resolve(w.buf); return; }
     if (k === '\b') { if (w.buf) { w.buf = w.buf.slice(0, -1); tBack(); tRender(); } return; }
@@ -517,10 +517,11 @@ function modemSound() {
 /* La pagina no puede abrir conexiones telnet: el visor bloquea la red. La sesion real
    se abre en una pestana nueva con fTelnet (ftelnet.ca), un terminal web cuyo proxy
    publico convierte WebSocket en telnet. Lista de BBS segun lo conocido; pueden cambiar. */
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 /* [tecla, host, puerto, nombre, pais, grupo]. Todos respondieron por telnet el 27-11-2026.
    El pais de los latinoamericanos se deduce de su dominio (.uy, .ar, .br). */
 const BBS_LIST = [
+  ['C', '', 0, 'Copihue BBS', 'Chile', 'Chile (dentro de DOS 486)'],
   ['1', 'vert.synchro.net', 23, 'Vertrauen', '', 'Internacional'],
   ['2', 'bbs.fozztexx.com', 23, 'RetroBattlestations', '', 'Internacional'],
   ['3', 'bbs.electronicchicken.com', 23, 'Electronic Chicken', '', 'Internacional'],
@@ -849,8 +850,8 @@ async function liveSession(tok, host, port, native) {
   }
 }
 let liveKeys = false;
-$('mkb').addEventListener('input', (e) => { const v = e.target.value; e.target.value = ''; if (live && v) { for (const ch of v) { SFX.key(true); const i = CP437.indexOf(ch); live.send(ch.charCodeAt(0) < 128 ? ch : (i >= 0 ? String.fromCharCode(128 + i) : '?')); } } });
-$('mkb').addEventListener('keydown', (e) => { if (!live) return; if (e.key === 'Enter') { e.preventDefault(); live.send('\r'); } else if (e.key === 'Backspace') { e.preventDefault(); live.send('\b'); } e.stopPropagation(); });
+$('mkb').addEventListener('input', (e) => { const v = e.target.value; e.target.value = ''; if (!live && v && bbsActive) { for (const ch of v) { SFX.key(true); feedKey(ch); } return; } if (live && v) { for (const ch of v) { SFX.key(true); const i = CP437.indexOf(ch); live.send(ch.charCodeAt(0) < 128 ? ch : (i >= 0 ? String.fromCharCode(128 + i) : '?')); } } });
+$('mkb').addEventListener('keydown', (e) => { if (!live) { if (bbsActive && (e.key === 'Enter' || e.key === 'Backspace')) { e.preventDefault(); feedKey(e.key === 'Enter' ? '\r' : '\b'); } e.stopPropagation(); return; } if (e.key === 'Enter') { e.preventDefault(); live.send('\r'); } else if (e.key === 'Backspace') { e.preventDefault(); live.send('\b'); } e.stopPropagation(); });
 function liveKey(e) {   /* teclado del PC -> BBS */
   if (!live) return false;
   const map = { Enter: '\r', Backspace: '\b', Tab: '\t', Escape: '\x1b', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D',
@@ -869,6 +870,258 @@ async function typeAT(tok, s) {
   tPut('\n'); tRender(); SFX.key(true); await sleep(250);
 }
 
+/* =====================================================================
+   Copihue BBS: BBS chileno dentro de DOS 486. Foros, alias y usuarios en
+   la base de datos compartida del artefacto (db); quien esta conectado y
+   chat en vivo con room. Nada inventado: parte vacio y lo llenan personas.
+   ===================================================================== */
+const COPIHUE_LOGO = [
+  ' ██████╗ ██████╗ ██████╗ ██╗██╗  ██╗██╗   ██╗███████╗',
+  '██╔════╝██╔═══██╗██╔══██╗██║██║  ██║██║   ██║██╔════╝',
+  '██║     ██║   ██║██████╔╝██║███████║██║   ██║█████╗  ',
+  '██║     ██║   ██║██╔═══╝ ██║██╔══██║██║   ██║██╔══╝  ',
+  '╚██████╗╚██████╔╝██║     ██║██║  ██║╚██████╔╝███████╗',
+  ' ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝'];
+const FOROS = [['general', 'General'], ['juegos', 'Juegos'], ['retro', 'Computacion retro'], ['chile', 'Cosas de Chile']];
+const clean = (t, n) => String(t == null ? '' : t).replace(/[{}\u0000-\u001f\u007f]/g, ' ').slice(0, n);
+const fmtFecha = (iso) => { const d = new Date(iso); if (isNaN(d)) return '';
+  return d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }); };
+let cDb = null, cUser = null, cRoom = null, cMe = null, cAlias = '', cOwner = false;
+async function cUse(name) { try { return await (window.claude && window.claude.use ? window.claude.use(name) : null); } catch (_) { return null; } }
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error('la base de datos no responde')), ms))]);
+const errTxt = (e) => clean(e && (e.code || e.message) || e, 70);
+const cWhere = (w) => { if (cRoom && cAlias) cRoom.presence({ alias: cAlias, where: w }).catch(() => {}); };
+
+async function cAliases() {
+  const snap = await withTimeout(cDb.collection('handles').get(), 10000);
+  const m = {}; for (const d of snap.docs) if (d.exists) m[d.id] = clean(d.data().alias, 16); return m;
+}
+
+async function copihueSession(tok) {
+  [cDb, cUser, cRoom] = await Promise.all([cUse('db'), cUse('user'), cUse('room')]);
+  cMe = cUser ? await cUser.id() : null;
+  cOwner = cUser ? !!(await cUser.isOwner()) : false;
+  await print('\n', tok); await typeAT(tok, 'ATDT 2-555-1990');
+  statusEl.textContent = 'Llamando a Copihue BBS…';
+  const tm = soundOn ? modemSound() : null;
+  const t0 = performance.now(), T = tm ? Math.min(tm.total, 7000) : 1200;
+  while (performance.now() - t0 < T) { check(tok); await sleep(50); }
+  if (tm) tm.stop();
+  await print('\n{15}CONNECT 14400{7}\n', tok, 3000); await sleep(400);
+  term.cps = 2400;
+  let s = '{cls}\n';
+  const cols = [12, 12, 12, 4, 4, 8];
+  COPIHUE_LOGO.forEach((l, i) => { s += `{${cols[i]}}   ${l}\n`; });
+  s += '{12}   B   B   S {8}  ·  Santiago de Chile  ·  un BBS de verdad dentro de DOS 486{7}\n\n';
+  await print(s, tok);
+  statusEl.textContent = 'Conectado a Copihue BBS';
+  if (!cDb) {
+    await print('{12}   La base de datos de Copihue BBS no esta disponible en esta vista.{7}\n   Abrela desde claude.ai o desde la app instalada de Claude.\n\n{8}   [Pulsa una tecla]{7}', tok);
+    await anyKey(tok); return;
+  }
+  let canWrite = !!cMe;
+  cAlias = '';
+  if (cMe) {
+    try { const h = await withTimeout(cDb.doc('handles/' + cMe).get(), 10000); if (h.exists) cAlias = clean(h.data().alias, 16); }
+    catch (e) { await print(`{12}   No se pudo leer tu alias: ${errTxt(e)}{7}\n`, tok); }
+  }
+  if (!cMe) {
+    cAlias = 'VISITANTE'; canWrite = false;
+    await print('{8}   Esta vista no tiene identidad de Claude: entras como VISITANTE, solo lectura.{7}\n', tok);
+  } else if (!cAlias) {
+    await print('{11}   Primera vez en Copihue BBS. Elige tu alias (3 a 16 caracteres): {15}', tok);
+    for (;;) {
+      const a = clean((await getLine(tok, 16, [['KB', 'Teclado'], ['\r', 'Enter']])).trim(), 16);
+      if (a.length >= 3) {
+        try { await cDb.doc('handles/' + cMe).set({ alias: a, since: new Date().toISOString() }); cAlias = a; }
+        catch (e) { cAlias = a; canWrite = false; await print(`{12}   No se pudo guardar tu alias (${errTxt(e)}): entras en modo solo lectura.{7}\n`, tok); }
+        break;
+      }
+      await print('{12}   Debe tener al menos 3 caracteres: {15}', tok);
+    }
+  }
+  cWhere('Menu principal');
+  await print(`\n{7}   Bienvenido/a, {15}${cAlias}{7}${cOwner ? ' {14}(SysOp){7}' : ''}.\n\n{8}   [Pulsa una tecla]{7}`, tok);
+  await anyKey(tok);
+  for (;;) {
+    cWhere('Menu principal');
+    await print('{cls}\n' + box('COPIHUE BBS  ·  MENU PRINCIPAL', ['',
+      '   {14}[F]{7} Foros de mensajes        {14}[C]{7} Chat en vivo',
+      '   {14}[Q]{7} Quien esta conectado     {14}[U]{7} Usuarios',
+      '   {14}[A]{7} Acerca de Copihue BBS    {14}[S]{7} Salir (colgar)', ''], 66, 12) +
+      `\n{8}   ${cAlias}${cOwner ? ' · SysOp' : ''}${canWrite ? '' : ' · solo lectura'}{7}\n\n{11}   Comando{7}: {15}`, tok);
+    const k = await getKey(tok, 'FCQUAS', [['F', 'Foros'], ['C', 'Chat en vivo'], ['Q', 'Quien esta'], ['U', 'Usuarios'], ['A', 'Acerca de'], ['S', 'Salir']]);
+    await print(k + '\n', tok);
+    if (k === 'F') await cForos(tok, canWrite);
+    else if (k === 'C') await cChat(tok, canWrite);
+    else if (k === 'Q') await cQuien(tok);
+    else if (k === 'U') await cUsuarios(tok);
+    else if (k === 'A') await cAcerca(tok);
+    else break;
+  }
+  if (cRoom) cRoom.presence({ alias: null, where: null }).catch(() => {});
+  await print('\n{14}   Gracias por llamar a Copihue BBS. ¡Vuelve pronto!{7}\n', tok); await sleep(700);
+  await print('{15}NO CARRIER{7}\n', tok, 3000); await sleep(900);
+}
+
+async function cForos(tok, canWrite) {
+  for (;;) {
+    cWhere('Foros');
+    const counts = {};
+    try { const snap = await withTimeout(cDb.collection('msgs').get(), 10000); for (const d of snap.docs) { const f = d.data().foro; counts[f] = (counts[f] || 0) + 1; } }
+    catch (e) { await print(`{12}   No se pudieron contar los mensajes: ${errTxt(e)}{7}\n`, tok); }
+    const lines = ['', ...FOROS.map(([id, n], i) => `   {14}${i + 1}{7}. ${n.padEnd(24)}{8}${String(counts[id] || 0).padStart(5)} mensajes{7}`), ''];
+    await print('{cls}\n' + box('FOROS DE COPIHUE BBS', lines, 58, 12) + '\n{11}   Elige un foro (1-4) o [V]olver{7}: {15}', tok);
+    const k = await getKey(tok, '1234V', [...FOROS.map(([, n], i) => [String(i + 1), n]), ['V', 'Volver']]);
+    if (k === 'V') return;
+    await print(k + '\n', tok);
+    await cForo(tok, FOROS[+k - 1], canWrite);
+  }
+}
+
+async function cForo(tok, [fid, fname], canWrite) {
+  for (;;) {
+    cWhere('Foro ' + fname);
+    let docs = [];
+    try { const snap = await withTimeout(cDb.collection('msgs').where('foro', '==', fid).orderBy('at', 'desc').limit(9).get(), 10000); docs = snap.docs.filter(d => d.exists); }
+    catch (e) { await print(`{12}   No se pudieron leer los mensajes: ${errTxt(e)}{7}\n`, tok); }
+    let al = {}; try { al = await cAliases(); } catch (_) {}
+    let s = `{cls}\n{12}   FORO {15}${fname}{8}   ·   ultimos ${docs.length} mensajes\n{8}   ${'─'.repeat(74)}{7}\n`;
+    if (!docs.length) s += `{8}   Todavia no hay mensajes.${canWrite ? ' Escribe el primero con [E].' : ''}{7}\n`;
+    docs.forEach((d, i) => { const m = d.data();
+      s += `   {14}${i + 1}{7}. {15}${clean(m.subject, 33).padEnd(34)}{11}${(al[m.by] || '?').padEnd(17)}{8}${fmtFecha(m.at)}{7}\n`; });
+    const keys = 'V' + (canWrite ? 'E' : '') + docs.map((_, i) => String(i + 1)).join('');
+    s += `\n{11}   ${docs.length ? '[1-' + docs.length + '] leer · ' : ''}${canWrite ? '[E]scribir · ' : ''}[V]olver{7}: {15}`;
+    await print(s, tok);
+    const hot = [...docs.map((d, i) => [String(i + 1), clean(d.data().subject, 24)])];
+    if (canWrite) hot.push(['E', 'Escribir']);
+    hot.push(['V', 'Volver']);
+    const k = await getKey(tok, keys, hot);
+    await print(k + '\n', tok);
+    if (k === 'V') return;
+    if (k === 'E') { await cEscribir(tok, fid, fname); continue; }
+    await cLeer(tok, docs[+k - 1], al);
+  }
+}
+
+async function cLeer(tok, d, al) {
+  const m = d.data();
+  let s = `{cls}\n{11}   De: {15}${al[m.by] || '?'}{11}     Fecha: {15}${fmtFecha(m.at)}\n{11}   Asunto: {15}${clean(m.subject, 60)}\n{8}   ${'─'.repeat(74)}{7}\n\n`;
+  for (const l of String(m.body || '').split('\n').slice(0, 15)) s += '   ' + clean(l, 76) + '\n';
+  const mine = m.by === cMe;
+  s += `\n{8}   [Pulsa una tecla para volver]${cOwner || mine ? '   [B] borrar este mensaje' : ''}{7}`;
+  await print(s, tok);
+  const k = await getKey(tok, null, [['\r', 'Volver'], ...((cOwner || mine) ? [['B', 'Borrar']] : [])]);
+  if (k === 'B' && (cOwner || mine)) {
+    await print('\n{12}   ¿Borrar el mensaje? (S/N){7}: ', tok);
+    const y = await getKey(tok, 'SN', [['S', 'Sí, borrar'], ['N', 'No']]);
+    if (y === 'S') {
+      try { await cDb.doc('msgs/' + d.id).delete(); await print('{10}S\n   Mensaje borrado.{7}\n', tok); }
+      catch (e) { await print(`{12}S\n   No se pudo borrar: ${errTxt(e)}{7}\n`, tok); }
+      await sleep(900);
+    }
+  }
+}
+
+async function cEscribir(tok, fid, fname) {
+  cWhere('Escribiendo en ' + fname);
+  await print(`{cls}\n{12}   NUEVO MENSAJE EN {15}${fname}\n{8}   ${'─'.repeat(74)}{7}\n\n{11}   Asunto{7}: {15}`, tok);
+  const subject = clean((await getLine(tok, 40, [['KB', 'Teclado'], ['\r', 'Enter']])).trim(), 40);
+  if (!subject) { await print('{8}   Sin asunto: mensaje cancelado.{7}\n', tok); await sleep(900); return; }
+  await print('\n{7}   Escribe el mensaje (hasta 15 lineas). Una linea vacia lo termina.\n\n', tok);
+  const lines = [];
+  while (lines.length < 15) {
+    await print(`{8}${String(lines.length + 1).padStart(3)}>{15} `, tok);
+    const l = clean(await getLine(tok, 74, [['KB', 'Teclado'], ['\r', 'Enter (linea vacia = fin)']]), 74);
+    if (!l.trim()) break;
+    lines.push(l);
+  }
+  if (!lines.length) { await print('{8}   Mensaje vacio: cancelado.{7}\n', tok); await sleep(900); return; }
+  await print('\n{11}   ¿Publicar? (S/N){7}: ', tok);
+  const y = await getKey(tok, 'SN', [['S', 'Publicar'], ['N', 'Cancelar']]);
+  await print(y + '\n', tok);
+  if (y !== 'S') return;
+  try {
+    await withTimeout(cDb.collection('msgs').add({ foro: fid, by: cMe, subject, body: lines.join('\n'), at: new Date().toISOString() }), 15000);
+    await print('{10}   Mensaje publicado.{7}\n', tok);
+  } catch (e) {
+    await print(`{12}   No se pudo publicar: ${errTxt(e)}${e && e.code === 'invalid_argument' ? ' (tu nivel de acceso no permite escribir)' : ''}{7}\n`, tok);
+  }
+  await sleep(1100);
+}
+
+async function cQuien(tok) {
+  const peers = cRoom ? cRoom.peers() : [];
+  const rows = peers.filter(p => p.kind === 'viewer').map(p => {
+    const pr = p.presence || {};
+    const name = pr.alias ? clean(pr.alias, 16) : '(en DOS 486)';
+    return `   {15}${name.padEnd(18)}{8}${clean(pr.where || 'fuera del BBS', 34)}{7}${p.isMe && p.sameTab ? '  {14}(tu){7}' : ''}`;
+  });
+  if (!cRoom) rows.push('   {8}No disponible en esta vista.{7}');
+  else if (!rows.length) rows.push('   {8}Nadie mas por ahora.{7}');
+  await print('{cls}\n' + box('QUIEN ESTA CONECTADO', ['', ...rows, ''], 66, 12) + '\n{8}   [Pulsa una tecla]{7}', tok);
+  await anyKey(tok);
+}
+
+async function cUsuarios(tok) {
+  let rows = [];
+  try {
+    const snap = await withTimeout(cDb.collection('handles').get(), 10000);
+    rows = snap.docs.filter(d => d.exists).map(d => d.data()).sort((a, b) => String(a.since).localeCompare(String(b.since)))
+      .slice(0, 18).map(u => `   {15}${clean(u.alias, 16).padEnd(18)}{8}desde ${fmtFecha(u.since)}{7}`);
+  } catch (e) { rows = [`   {12}No se pudo leer la lista: ${errTxt(e)}{7}`]; }
+  if (!rows.length) rows = ['   {8}Todavia no hay usuarios registrados.{7}'];
+  await print('{cls}\n' + box('USUARIOS DE COPIHUE BBS', ['', ...rows, ''], 58, 12) + '\n{8}   [Pulsa una tecla]{7}', tok);
+  await anyKey(tok);
+}
+
+async function cAcerca(tok) {
+  await print('{cls}\n' + box('ACERCA DE COPIHUE BBS', ['',
+    '   Copihue BBS es un BBS chileno creado en 2026 dentro de DOS 486.',
+    '   Los foros, los alias y el chat son reales: los escriben las',
+    '   personas con las que se comparte esta app. Nada viene inventado.',
+    '',
+    '   Es un homenaje a la escena BBS chilena de los anos 90. Una de',
+    '   esas BBS fue Araucaria BBS, de Nunoa (Santiago), cuyo sysop era',
+    '   Fernando Jorquera; aparece en un listado de BBS hispanos de 2002',
+    '   con conexion solo por telefono (56-2-277-3814).',
+    '',
+    '   El SysOp de Copihue BBS es quien es dueno de esta app.', ''], 72, 12) + '\n{8}   [Pulsa una tecla]{7}', tok);
+  await anyKey(tok);
+}
+
+async function cChat(tok, canWrite) {
+  if (!cRoom) { await print('{12}   El chat no esta disponible en esta vista.{7}\n{8}   [Pulsa una tecla]{7}', tok); await anyKey(tok); return; }
+  cWhere('Chat en vivo');
+  await print('{cls}\n{12}   CHAT EN VIVO{8}  ·  los mensajes no se guardan  ·  /salir para volver{7}\n\n', tok);
+  const pending = [];
+  const off = cRoom.on('chat', (m) => { const d = m.data || {}; pending.push(`{${m.isMe ? 14 : 11}}${clean(d.alias, 16)}{7}: ${clean(d.text, 200)}`); });
+  let alive = true;
+  const pump = (async () => {   /* imprime lo que llega sin romper lo que estas escribiendo */
+    while (alive) {
+      if (pending.length && keyWaiter && keyWaiter.line && keyWaiter.buf === '') {
+        term.rows[term.y] = []; term.x = 0;
+        while (pending.length) await print(pending.shift() + '\n', tok, 6000);
+        await print(canWrite ? '{15}> ' : '{8}(solo lectura) ', tok, 6000);
+      }
+      await sleep(250);
+    }
+  })().catch(() => {});
+  if (canWrite) cRoom.emit('chat', { alias: cAlias, text: '(entro al chat)' }).catch(() => {});
+  try {
+    for (;;) {
+      await print(canWrite ? '{15}> ' : '{8}(solo lectura) ', tok, 6000);
+      const t = clean(await getLine(tok, 200, [['KB', 'Teclado'], ['\r', 'Enviar']]), 200).trim();
+      if (t === '/salir' || (!canWrite && !t)) break;
+      if (t && canWrite) {
+        try { await cRoom.emit('chat', { alias: cAlias, text: t }); }
+        catch (e) { await print(`{12}   No se pudo enviar: ${errTxt(e)}{7}\n`, tok); }
+      }
+    }
+  } finally { alive = false; off(); }
+  if (canWrite) cRoom.emit('chat', { alias: cAlias, text: '(salio del chat)' }).catch(() => {});
+}
+
 async function bbsSession(tok) {
   term.fg = 7; tClear();
   await print(`{15}TERMINAL{7}  -  COM1  57600 baudios  8N1  ANSI   {8}(DOS 486 ${APP_VERSION}${desktopApi ? ', app: ' + (desktopPlatform || '?') : ''}){7}\n\n`, tok, 3000);
@@ -877,7 +1130,7 @@ async function bbsSession(tok) {
   let grp = '';
   for (const [key, h, p, name, country, g] of BBS_LIST) {
     if (g !== grp) { grp = g; s += `{9} ${g}{7}\n`; }
-    s += `  {14}${key}{7}. {15}${name.padEnd(21)}{8}${(h + ":" + p).padEnd(31)}{7}${country}\n`;
+    s += `  {14}${key}{7}. {15}${name.padEnd(21)}{8}${(h ? h + ':' + p : 'red interna de DOS 486').padEnd(31)}{7}${country}\n`;
   }
   const NATIVE = await nativeAvailable();
   const INSCREEN = NATIVE || STANDALONE;
@@ -885,10 +1138,11 @@ async function bbsSession(tok) {
   else if (STANDALONE) s += '\n{7}Elige un BBS. Conexion real por el puente WebSocket de fTelnet, en esta pantalla.\n{8}[V] volver a DOS{7}\n';
   else s += '\n{7}Elige un BBS abajo. Dentro de claude.ai se abre en una pestana nueva (fTelnet).\n{8}[V] volver a DOS{7}\n';
   await print(s, tok, 3000);
-  setHotkeys([...BBS_LIST.map(([key, h, p, name, country]) => [key, name + (country ? ' · ' + country : ''), INSCREEN ? null : ftelnetUrl(h, p)]), ['V', 'Volver a DOS']]);
+  setHotkeys([...BBS_LIST.map(([key, h, p, name, country]) => [key, name + (country ? ' · ' + country : ''), (INSCREEN || !h) ? null : ftelnetUrl(h, p)]), ['V', 'Volver a DOS']]);
   const keys = 'V' + BBS_LIST.map(b => b[0]).join('');
   const k = await new Promise(r => { keyWaiter = { resolve: r, allowed: keys, linkOnly: !INSCREEN }; });
   if (k === 'V') return;
+  if (k === 'C') { await copihueSession(tok); return; }
   const [, host, port] = BBS_LIST.find(b => b[0] === k);
   if (INSCREEN) { await liveSession(tok, host, port, NATIVE); return; }
   let hung = false;
@@ -979,6 +1233,7 @@ $('cmds').addEventListener('click', (e) => {
       else live.send(m[b.dataset.bbs] || '');
       screenEl.focus(); return;
     }
+    if (b.dataset.bbs === 'KB') { $('mkb').focus(); return; }
     feedKey(b.dataset.bbs === 'ENTER' ? '\r' : b.dataset.bbs); return;
   }
   if (b.dataset.cmd === 'BBS') { bbsStart(); return; }
