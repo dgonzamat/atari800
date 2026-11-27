@@ -63,17 +63,20 @@ sudo apt install mtools dosfstools unzip curl python3 qemu-system-x86 dosbox
 
 Opciones: `RAM=16 ./run.sh`, `AUDIO=pa ./run.sh`, `CYCLES=max ./run-dosbox.sh`.
 Cambia la velocidad en DOSBox con `Ctrl+F11` / `Ctrl+F12`. Dentro de DOS,
-`JUEGOS` vuelve al menú.
+`JUEGOS` vuelve al menú y cada programa tiene su comando en `C:\` (`DOOM`,
+`WOLF3D`, `DUKE3D`, `KEEN1`, `TP`...; lista en `config/COMMANDS.LST`).
 
 ## Versión web (navegador)
 
 `web/build-web.sh` (después de `./build.sh`) genera `web/out/`: dos discos de 32 MB
 (C: FreeDOS + juegos, D: Duke Nukem 3D + Heretic) guardados como texto base64 de
 la imagen gzip, la configuración de DOSBox y el emulador (paquete npm `emulators`
-8.5.3, núcleo DOSBox-X en WebAssembly, verificado por SHA-256). La página
-`web/index.html` muestra un monitor y una caja 486: al pulsar POWER hace un POST de
-BIOS simulado mientras descarga los discos y luego arranca FreeDOS real desde el
-disco C:. Si el emulador no puede iniciar, ofrece un DOS simulado con comandos básicos.
+8.5.3, núcleo DOSBox-X en WebAssembly, verificado por SHA-256).
+
+La página `web/index.html` tiene solo la pantalla y los comandos preseteados:
+arranca FreeDOS real desde el disco C: (sin menús) y cada botón escribe su comando
+en DOS (`DOOM`, `WOLF3D`, `KEEN1`, `TP`...). Los botones se activan cuando
+`FDAUTO.BAT` dibuja una barra sólida que la página detecta en la imagen.
 
 ```bash
 web/build-web.sh
@@ -83,8 +86,9 @@ web/build-web.sh
 cd web/out && python3 -m http.server 8000
 ```
 
-Probado en Chromium (Playwright): menú de arranque de FreeDOS, menú de juegos,
-DOOM, Heretic, Wolfenstein 3D, Duke Nukem 3D y Duke Nukem II muestran imagen.
+Probado en Chromium (Playwright), pantalla inicial de cada uno: los 12 juegos,
+Turbo Pascal 5.5 y EDIT cargan desde su botón. En una de siete pruebas de ZZT el
+emulador se cayó ("null function") y no se repitió; causa no identificada.
 El núcleo DOSBox clásico (`wdosbox`) no arranca el disco ("read error" en el MBR,
 causa probable: sin soporte de INT 13h extendida); por eso se usa DOSBox-X.
 
@@ -94,12 +98,14 @@ Probado en este entorno (arranque y pantalla inicial de cada juego, sin jugar
 partidas completas):
 
 - **QEMU (`run.sh`)**: arranque FreeDOS, menú, Doom, Heretic, Commander Keen 1 y 4,
-  Dangerous Dave, SkyRoads, Scorched Earth, ZZT y Epic Pinball muestran su pantalla.
+  Dangerous Dave, SkyRoads, Scorched Earth y ZZT muestran su pantalla. Epic Pinball
+  se lanzaba con el ejecutable equivocado (corregido a `PINBALL.EXE`) y no se volvió
+  a probar en QEMU.
 - **Limitación de QEMU 8.2:** Wolfenstein 3D, Duke Nukem 3D y Duke Nukem II
   quedan en pantalla negra (el programa espera en el puerto `0x3DA`; QEMU emula
   el retrazo vertical de forma simplificada, **causa probable, no confirmada**).
   Esos tres funcionan con `./run-dosbox.sh`.
-- **No probados:** Turbo Pascal 5.5, EDIT, sonido real (se usó un backend de audio nulo),
+- **No probados en QEMU:** Turbo Pascal 5.5, EDIT, sonido real (se usó un backend de audio nulo),
   ratón y la opción de arranque 2 y 3 con los juegos.
 - La velocidad en QEMU (TCG) no es la de un 486 real; en DOSBox se fija en
   26 800 ciclos, valor aproximado de un 486DX2‑66 (estimación).

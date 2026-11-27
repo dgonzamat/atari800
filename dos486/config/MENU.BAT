@@ -73,7 +73,7 @@ SCORCH.EXE
 goto volver
 :pinball
 cd \GAMES\EPICPIN
-EP1.EXE
+PINBALL.EXE
 goto volver
 :sky
 cd \GAMES\SKYROADS

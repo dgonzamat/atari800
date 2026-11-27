@@ -51,10 +51,18 @@ PY
 echo "== Disco C: (arranque)"
 CC=$(make_disk "$OUT/tmp/c.img" 32 DOS486 1)
 D="$OUT/tmp/c.img@@32256"
-sed 's/$/\r/' ../config/FDCONFIG.SYS > "$OUT/tmp/FDCONFIG.SYS"
-{ cat ../config/FDAUTO.BAT | sed 's/^SET TMP=C:\\TEMP$/&\nSET G2=D:/'; } | sed 's/$/\r/' > "$OUT/tmp/FDAUTO.BAT"
+# Version web: sin menu de arranque (modo 1 directo) y sin menu de juegos automatico
+grep -v -e '^MENU' -e '^2?' ../config/FDCONFIG.SYS | sed -E 's/^1?2?\?//; s/$/\r/' > "$OUT/tmp/FDCONFIG.SYS"
+{ grep -v -e '^vdelay' -e '^call C:.MENU.BAT' -e '^echo' ../config/FDAUTO.BAT | sed 's/^SET TMP=C:\\TEMP$/&\nSET G2=D:/'
+  echo 'cls'
+  # barra solida (79 x CP437 0xDB): la pagina la detecta para saber que DOS esta listo
+  printf 'echo '; printf '\333%.0s' $(seq 79); printf '\n'
+  echo 'echo  DOS 486 - FreeDOS 1.3 - CPU 486, Sound Blaster 16, VGA'
+  echo 'echo  Escribe DOOM, WOLF3D, KEEN1... para cargar un programa. JUEGOS abre el menu.'
+  echo 'echo.'
+} | sed 's/$/\r/' > "$OUT/tmp/FDAUTO.BAT"
 sed 's/$/\r/' ../config/MENU.BAT > "$OUT/tmp/MENU.BAT"
-mcopy -m -i "$D" "$ST/fd/KERNEL.SYS" "$ST/fd/COMMAND.COM" "$OUT/tmp/FDCONFIG.SYS" "$OUT/tmp/FDAUTO.BAT" "$OUT/tmp/MENU.BAT" ::
+mcopy -m -i "$D" "$ST/fd/KERNEL.SYS" "$ST/fd/COMMAND.COM" "$OUT/tmp/FDCONFIG.SYS" "$OUT/tmp/FDAUTO.BAT" "$OUT/tmp/MENU.BAT" "$ST"/cfg/cmds/*.BAT ::
 mmd -i "$D" ::/GAMES ::/PROGRAMS ::/TEMP
 mcopy -s -m -i "$D" "$ST/fd/FREEDOS" ::
 for dir in "$ST"/GAMES/* "$ST"/PROGRAMS/*; do

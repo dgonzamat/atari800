@@ -79,6 +79,12 @@ done
 echo "== Configuracion de arranque (fin de linea DOS)"
 mkdir -p "$STAGE/cfg"
 for f in FDCONFIG.SYS FDAUTO.BAT MENU.BAT; do sed 's/$/\r/' "config/$f" > "$STAGE/cfg/$f"; done
+# Un .BAT por programa en C:\ (DOOM, WOLF3D, KEEN1...): escribir el nombre lo carga
+mkdir -p "$STAGE/cfg/cmds"
+grep -v '^#' config/COMMANDS.LST | while IFS='|' read -r cmd drv dir exe title; do
+  { printf '@echo off\r\nC:\r\n'; [ "$drv" = G2 ] && printf '%%G2%%\r\n'
+    printf 'cd \\%s\r\n%s\r\nC:\r\ncd \\\r\n' "$dir" "$exe"; } > "$STAGE/cfg/cmds/$cmd.BAT"
+done
 
 echo "== Creando disco $IMG (${SIZE_MB} MB, geometria 16 cabezas x 63 sectores)"
 rm -f "$IMG"
@@ -123,7 +129,7 @@ D="$IMG@@32256"
 mcopy -m -i "$D" "$STAGE/fd/KERNEL.SYS" "$STAGE/fd/COMMAND.COM" ::
 mmd -i "$D" ::/GAMES ::/PROGRAMS ::/TEMP
 mcopy -s -m -i "$D" "$STAGE/fd/FREEDOS" ::
-mcopy -m -i "$D" "$STAGE/cfg/FDCONFIG.SYS" "$STAGE/cfg/FDAUTO.BAT" "$STAGE/cfg/MENU.BAT" ::
+mcopy -m -i "$D" "$STAGE/cfg/FDCONFIG.SYS" "$STAGE/cfg/FDAUTO.BAT" "$STAGE/cfg/MENU.BAT" "$STAGE"/cfg/cmds/*.BAT ::
 for dir in "$STAGE"/GAMES/* "$STAGE"/PROGRAMS/*; do
   rel=${dir#"$STAGE"/}
   mmd -i "$D" "::/$rel"
@@ -133,7 +139,7 @@ echo "== Arbol de carpetas para DOSBox (mismo contenido que el disco)"
 rm -rf "$STAGE/c"; mkdir -p "$STAGE/c"
 ln -s ../GAMES "$STAGE/c/GAMES"; ln -s ../PROGRAMS "$STAGE/c/PROGRAMS"
 ln -s ../fd/FREEDOS "$STAGE/c/FREEDOS"; mkdir -p "$STAGE/c/TEMP"
-cp "$STAGE/cfg/MENU.BAT" "$STAGE/c/MENU.BAT"
+cp "$STAGE/cfg/MENU.BAT" "$STAGE"/cfg/cmds/*.BAT "$STAGE/c/"
 
 echo "== Listo: $IMG"
 echo "   Arranca con: ./run.sh   (QEMU, PC 486 completo con FreeDOS)"
