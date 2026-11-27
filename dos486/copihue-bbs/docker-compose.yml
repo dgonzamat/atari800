@@ -1,0 +1,18 @@
+services:
+  copihue-bbs:
+    build: .
+    image: copihue-bbs:latest
+    container_name: copihue-bbs
+    restart: unless-stopped
+    ports:
+      - "2323:2323"        # telnet: cambia a "23:2323" para el puerto clasico
+      - "8080:7860"        # pagina web con terminal y WebSocket (fTelnet)
+    environment:
+      TZ: America/Santiago
+      COPIHUE_SYSOP: ""    # alias con permisos de SysOp (puede borrar cualquier mensaje)
+      COPIHUE_MAX_SESSIONS: "30"
+      COPIHUE_IDLE_MINUTES: "15"
+    volumes:
+      - copihue-data:/home/bbs/data
+volumes:
+  copihue-data:

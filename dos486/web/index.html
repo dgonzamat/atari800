@@ -436,7 +436,7 @@ function tRender() {
 /* Escribe texto con codigos {n} de color (0-15) y {cls}, a la velocidad del modem */
 async function print(s, tok, cps) {
   const speed = cps || term.cps; const items = [];
-  s.replace(/\{(cls|\d{1,2})\}|([\s\S])/g, (m, code, ch) => { items.push(code !== undefined ? { code } : { ch }); return ''; });
+  s.replace(/\{(cls|b?\d{1,2})\}|([\s\S])/g, (m, code, ch) => { items.push(code !== undefined ? { code } : { ch }); return ''; });
   let i = 0, last = performance.now(), carry = 0;
   while (i < items.length) {
     check(tok);
@@ -445,12 +445,12 @@ async function print(s, tok, cps) {
     let n = Math.floor(carry); carry -= n; if (n < 1) continue;
     while (n > 0 && i < items.length) {
       const it = items[i++];
-      if (it.code === 'cls') tClear(); else if (it.code !== undefined) term.fg = +it.code; else { tPut(it.ch); n--; }
+      if (it.code === 'cls') tClear(); else if (it.code !== undefined) { if (it.code[0] === 'b') term.bg = +it.code.slice(1); else term.fg = +it.code; } else { tPut(it.ch); n--; }
     }
     tRender();
   }
 }
-const vis = (s) => s.replace(/\{(cls|\d{1,2})\}/g, '');
+const vis = (s) => s.replace(/\{(cls|b?\d{1,2})\}/g, '');
 function box(title, lines, w, c = 9) {
   const top = `{${c}}╔${'═'.repeat(Math.floor((w - 2 - vis(title).length - 2) / 2))} {15}${title}{${c}} ${'═'.repeat(Math.ceil((w - 2 - vis(title).length - 2) / 2))}╗\n`;
   const body = lines.map(l => `{${c}}║{7}${l}${' '.repeat(Math.max(0, w - 2 - vis(l).length))}{${c}}║\n`).join('');
@@ -466,7 +466,7 @@ function setHotkeys(list) {
 function feedKey(k, fromLink) {
   if (!keyWaiter) return;
   const w = keyWaiter;
-  if (w.linkOnly && !/^[vVcC]$/.test(k) && !fromLink) return;   /* un BBS por telnet solo se elige con su enlace */
+  if (w.linkOnly && !/^[vVcCdD]$/.test(k) && !fromLink) return;   /* un BBS por telnet solo se elige con su enlace */
   if (w.line) {
     if (k === '\r') { keyWaiter = null; tPut('\n'); tRender(); w.resolve(w.buf); return; }
     if (k === '\b') { if (w.buf) { w.buf = w.buf.slice(0, -1); tBack(); tRender(); } return; }
@@ -517,11 +517,12 @@ function modemSound() {
 /* La pagina no puede abrir conexiones telnet: el visor bloquea la red. La sesion real
    se abre en una pestana nueva con fTelnet (ftelnet.ca), un terminal web cuyo proxy
    publico convierte WebSocket en telnet. Lista de BBS segun lo conocido; pueden cambiar. */
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v19';
 /* [tecla, host, puerto, nombre, pais, grupo]. Todos respondieron por telnet el 27-11-2026.
    El pais de los latinoamericanos se deduce de su dominio (.uy, .ar, .br). */
 const BBS_LIST = [
   ['C', '', 0, 'Copihue BBS', 'Chile', 'Chile (dentro de DOS 486)'],
+  ['D', '', 0, 'Copihue BBS (Docker)', 'Chile', 'Chile (dentro de DOS 486)'],
   ['1', 'vert.synchro.net', 23, 'Vertrauen', '', 'Internacional'],
   ['2', 'bbs.fozztexx.com', 23, 'RetroBattlestations', '', 'Internacional'],
   ['3', 'bbs.electronicchicken.com', 23, 'Electronic Chicken', '', 'Internacional'],
@@ -882,6 +883,10 @@ const COPIHUE_LOGO = [
   '██║     ██║   ██║██╔═══╝ ██║██╔══██║██║   ██║██╔══╝  ',
   '╚██████╗╚██████╔╝██║     ██║██║  ██║╚██████╔╝███████╗',
   ' ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝'];
+/* Bandera de Chile (18x6): canton azul con estrella blanca, franja blanca, franja roja */
+const FLAG = [
+  '{1}██████{15}████████████', '{b1}{15}  ★   {b0}{15}████████████', '{1}██████{15}████████████',
+  '{4}██████████████████', '{4}██████████████████', '{4}██████████████████'];
 const FOROS = [['general', 'General'], ['juegos', 'Juegos'], ['retro', 'Computacion retro'], ['chile', 'Cosas de Chile']];
 const clean = (t, n) => String(t == null ? '' : t).replace(/[{}\u0000-\u001f\u007f]/g, ' ').slice(0, n);
 const fmtFecha = (iso) => { const d = new Date(iso); if (isNaN(d)) return '';
@@ -911,7 +916,7 @@ async function copihueSession(tok) {
   term.cps = 2400;
   let s = '{cls}\n';
   const cols = [12, 12, 12, 4, 4, 8];
-  COPIHUE_LOGO.forEach((l, i) => { s += `{${cols[i]}}   ${l}\n`; });
+  COPIHUE_LOGO.forEach((l, i) => { s += `{${cols[i]}} ${l}  ${FLAG[i]}{7}\n`; });
   s += '{12}   B   B   S {8}  ·  Santiago de Chile  ·  un BBS de verdad dentro de DOS 486{7}\n\n';
   await print(s, tok);
   statusEl.textContent = 'Conectado a Copihue BBS';
@@ -1122,6 +1127,28 @@ async function cChat(tok, canWrite) {
   if (canWrite) cRoom.emit('chat', { alias: cAlias, text: '(salio del chat)' }).catch(() => {});
 }
 
+/* Copihue BBS servido por telnet desde Docker (dos486/copihue-bbs). La direccion se recuerda en este navegador. */
+async function copihueDocker(tok, NATIVE, INSCREEN) {
+  let saved = 'localhost:2323';
+  try { saved = localStorage.getItem('copihueDocker') || saved; } catch (_) {}
+  await print(`\n{11}Direccion del servidor Copihue {8}(Enter = ${saved}){11}: {15}`, tok, 3000);
+  const typed = (await getLine(tok, 60, [['KB', 'Teclado'], ['\r', 'Enter = ' + saved]])).trim() || saved;
+  const m = /^([a-z0-9.-]+)(?::(\d{1,5}))?$/i.exec(typed);
+  if (!m) { await print('{12}Direccion invalida. Usa host o host:puerto.{7}\n', tok, 3000); await sleep(1500); return; }
+  const host = m[1], port = +(m[2] || 2323);
+  try { localStorage.setItem('copihueDocker', `${host}:${port}`); } catch (_) {}
+  const local = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(host);
+  if (NATIVE) { await liveSession(tok, host, port, true); return; }
+  if (local) {
+    await print('{12}Un servidor en tu PC o red local solo se alcanza desde la app instalada de Claude\n(conexion directa). Desde aqui usa una direccion publica de Internet.{7}\n\n{8}[Pulsa una tecla]{7}', tok, 3000);
+    await anyKey(tok); return;
+  }
+  if (INSCREEN) { await liveSession(tok, host, port, false); return; }
+  await print(`{7}La sesion se abre en una pestana nueva con fTelnet.{7}\n`, tok, 3000);
+  setHotkeys([['1', `Abrir ${host}:${port}`, ftelnetUrl(host, port)], ['V', 'Volver a DOS']]);
+  await new Promise(r => { keyWaiter = { resolve: r, allowed: 'V1', linkOnly: true }; });
+}
+
 async function bbsSession(tok) {
   term.fg = 7; tClear();
   await print(`{15}TERMINAL{7}  -  COM1  57600 baudios  8N1  ANSI   {8}(DOS 486 ${APP_VERSION}${desktopApi ? ', app: ' + (desktopPlatform || '?') : ''}){7}\n\n`, tok, 3000);
@@ -1130,7 +1157,7 @@ async function bbsSession(tok) {
   let grp = '';
   for (const [key, h, p, name, country, g] of BBS_LIST) {
     if (g !== grp) { grp = g; s += `{9} ${g}{7}\n`; }
-    s += `  {14}${key}{7}. {15}${name.padEnd(21)}{8}${(h ? h + ':' + p : 'red interna de DOS 486').padEnd(31)}{7}${country}\n`;
+    s += `  {14}${key}{7}. {15}${name.padEnd(21)}{8}${(h ? h + ':' + p : key === 'D' ? 'tu servidor Docker (telnet)' : 'red interna de DOS 486').padEnd(31)}{7}${country}\n`;
   }
   const NATIVE = await nativeAvailable();
   const INSCREEN = NATIVE || STANDALONE;
@@ -1143,6 +1170,7 @@ async function bbsSession(tok) {
   const k = await new Promise(r => { keyWaiter = { resolve: r, allowed: keys, linkOnly: !INSCREEN }; });
   if (k === 'V') return;
   if (k === 'C') { await copihueSession(tok); return; }
+  if (k === 'D') { await copihueDocker(tok, NATIVE, INSCREEN); return; }
   const [, host, port] = BBS_LIST.find(b => b[0] === k);
   if (INSCREEN) { await liveSession(tok, host, port, NATIVE); return; }
   let hung = false;
