@@ -16,13 +16,19 @@ echo    5. Commander Keen 1 (1990)     A. SkyRoads (1993)
 echo                                   B. ZZT (1991)
 echo    F. Lemmings demo (1991)        C. Heretic (1994)
 echo    G. Prince of Persia demo       H. Stunts demo (1990)
+echo    I. Carmageddon demo (1997, pide Pentium)
+echo    J. Another World demo (1991)
 echo   PROGRAMAS
 echo    D. Turbo Pascal 5.5 (1989)     E. Editor de texto (EDIT)
+echo    K. Telix 3.21 (terminal para BBS por modem)
 echo.
 echo    Q. Salir a la linea de comandos DOS
 echo.
-choice /c:123456789ABCDEFGHQ /n "  Elige una opcion: "
-if errorlevel 18 goto salir
+choice /c:123456789ABCDEFGHIJKQ /n "  Elige una opcion: "
+if errorlevel 21 goto salir
+if errorlevel 20 goto telix
+if errorlevel 19 goto another
+if errorlevel 18 goto carma
 if errorlevel 17 goto stunts
 if errorlevel 16 goto prince
 if errorlevel 15 goto lemmings
@@ -90,6 +96,19 @@ goto volver
 :prince
 cd \GAMES\PRINCE
 PRINCE.EXE
+goto volver
+:another
+cd \GAMES\ANOTHER
+AWDEMO.EXE
+goto volver
+:telix
+cd \PROGRAMS\TELIX
+TELIX.EXE
+goto volver
+:carma
+%G2%
+cd \GAMES\CARMA
+DATA.EXE
 goto volver
 :stunts
 cd \GAMES\STUNTS

@@ -23,6 +23,10 @@ sbbase=220
 irq=5
 dma=1
 hdma=5
+[serial]
+# Modem emulado: ATDT host[:puerto] abre una conexion telnet real por Internet
+serial1=modem
+serial2=dummy
 [autoexec]
 mount c $PWD/build/c
 c:

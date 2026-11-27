@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Crea los dos discos para la version web (DOSBox en WebAssembly) a partir de ../build.
 # Cada disco se guarda como texto base64 de la imagen gzip (el visor de artefactos no sirve .zip).
-#   C: FreeDOS + juegos   D: Duke Nukem 3D + Heretic
+#   C: FreeDOS + juegos   D: Duke Nukem 3D + Heretic + Carmageddon
 # Requiere ejecutar antes ../build.sh. Salida: web/out/
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -67,15 +67,15 @@ mmd -i "$D" ::/GAMES ::/PROGRAMS ::/TEMP
 mcopy -s -m -i "$D" "$ST/fd/FREEDOS" ::
 for dir in "$ST"/GAMES/* "$ST"/PROGRAMS/*; do
   rel=${dir#"$ST"/}
-  case "$rel" in GAMES/DUKE3D|GAMES/HERETIC) continue;; esac
+  case "$rel" in GAMES/DUKE3D|GAMES/HERETIC|GAMES/CARMA) continue;; esac
   mmd -i "$D" "::/$rel"; mcopy -s -m -i "$D" "$dir"/* "::/$rel/"
 done
 
 echo "== Disco D: (datos)"
-CD=$(make_disk "$OUT/tmp/d.img" 32 JUEGOS2 0)
+CD=$(make_disk "$OUT/tmp/d.img" 96 JUEGOS2 0)
 D="$OUT/tmp/d.img@@32256"
 mmd -i "$D" ::/GAMES
-for g in DUKE3D HERETIC; do mmd -i "$D" "::/GAMES/$g"; mcopy -s -m -i "$D" "$ST/GAMES/$g"/* "::/GAMES/$g/"; done
+for g in DUKE3D HERETIC CARMA; do mmd -i "$D" "::/GAMES/$g"; mcopy -s -m -i "$D" "$ST/GAMES/$g"/* "::/GAMES/$g/"; done
 
 echo "== Discos como texto base64 (gzip) + dosbox.conf"
 cat > "$OUT/dosbox.conf.txt" <<CONF
@@ -86,7 +86,7 @@ startbanner=false
 [cpu]
 core=normal
 cputype=486
-cycles=max limit 30000
+cycles=auto 26800 100% limit 200000
 [mixer]
 rate=44100
 [sblaster]
@@ -104,8 +104,15 @@ imgmount 3 d.img -size 512,63,16,$CD -t hdd -fs none > nul
 cls
 boot -l c
 CONF
-gzip -9 -n -c "$OUT/tmp/c.img" | base64 -w0 > "$OUT/disk-c.img.gz.txt"
-gzip -9 -n -c "$OUT/tmp/d.img" | base64 -w0 > "$OUT/disk-d.img.gz.txt"
+# Cada disco: gzip -> base64, partido en trozos de 14 MB (limite del visor: 16 MB por archivo)
+manifest="{"
+for d in c d; do
+  gzip -9 -n -c "$OUT/tmp/$d.img" | base64 -w0 | split -b 14000000 -d -a 1 --additional-suffix=.txt - "$OUT/disk-$d.part"
+  parts=$(cd "$OUT" && ls disk-$d.part*.txt | sed 's/.*/"&"/' | paste -sd, -)
+  manifest="$manifest\"$d\":[$parts],"
+done
+echo "${manifest%,}}" > "$OUT/disks.json"
+cat "$OUT/disks.json"
 rm -rf "$OUT/tmp"
 
 echo "== Emulador (paquete npm emulators 8.5.3, nucleo DOSBox-X)"

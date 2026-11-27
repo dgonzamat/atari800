@@ -40,15 +40,18 @@ Hardware emulado: CPU 486, 32 MB RAM, VGA Cirrus (QEMU), Sound Blaster 16
 | F | Lemmings (demo oficial, 4 niveles; introducción en alemán) | `Lemmings_1020` |
 | G | Prince of Persia (demo oficial) | `PrinceOfPersia_479` |
 | H | Stunts (demo oficial) | `stunts_demo_disk` |
+| I | Carmageddon (demo oficial; pide Pentium, en la web va a toda la CPU) | `carmdemo` |
+| J | Another World / Out of This World (demo oficial) | `OutOfThisWorldDemo` |
 | D | Turbo Pascal 5.5 | `TurboPascal55` |
+| K | Telix 3.21 shareware (terminal para BBS; 45 días de evaluación) | `TLX3211_ZIP` |
 | E | EDIT (editor de FreeDOS) | incluido en FreeDOS |
 
 **Licencias:** el repositorio no contiene ningún juego; se bajan al ejecutar
 `build.sh`. Se eligieron títulos publicados como shareware/freeware según su
 ficha en archive.org, dato que no está verificado de forma independiente: revisa
 la licencia de cada uno antes de redistribuir la imagen resultante.
-**Carmageddon no está incluido:** su demo exige un Pentium 90 con 8–16 MB de RAM y
-ocupa 40 MB; en el 486 emulado no es jugable.
+Las licencias de las demos (por ejemplo la de Out of This World) permiten copiarlas
+gratis para uso personal y no comercial; no redistribuyas la imagen con fines comerciales.
 
 ## Uso
 
@@ -97,6 +100,27 @@ Turbo Pascal 5.5 y EDIT cargan desde su botón. En una de siete pruebas de ZZT e
 emulador se cayó ("null function") y no se repitió; causa no identificada.
 El núcleo DOSBox clásico (`wdosbox`) no arranca el disco ("read error" en el MBR,
 causa probable: sin soporte de INT 13h extendida); por eso se usa DOSBox-X.
+
+## BBS reales por módem (versión de escritorio)
+
+`./run-dosbox.sh` activa el módem emulado de DOSBox en COM1 (`serial1=modem`).
+Al marcar `ATDT host` (o `ATDT host:puerto`) abre una conexión telnet real por
+Internet. Escribe `TELIX` en DOS, responde las preguntas de configuración la
+primera vez y, en el modo terminal, marca por ejemplo:
+
+```
+ATDT vert.synchro.net
+```
+
+BBS que siguen activos según lo que recuerdo (los cuatro resuelven en DNS; la
+conexión completa **no se pudo probar** desde el entorno donde se armó esto):
+`vert.synchro.net`, `bbs.fozztexx.com`, `blackflag.acid.org`,
+`bbs.electronicchicken.com`. Comprobado: Telix responde `OK` a `ATZ` con el módem
+emulado y `ATDT` intenta la conexión.
+
+La versión web **no** puede conectarse a BBS reales: el visor bloquea las
+conexiones externas y el emulador en WebAssembly no tiene red. Su botón `BBS`
+es una simulación (módem, "EL 486 BBS", mensajes y archivos ficticios).
 
 ## Estado de pruebas
 

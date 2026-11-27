@@ -35,6 +35,9 @@ heretic.zip|$A/hereticsw/hereticsw.zip|6333fc7e4d9c742c04da7469169643949d10d3d62
 lemmings.zip|$A/Lemmings_1020/lemmings.zip|85799eaf5dcfc80ef86900f9aa4567adbc9cc4e60111a96522b84ab2aa3e2d45|GAMES/LEMMINGS
 prince.zip|$A/PrinceOfPersia_479/pop1.ZIP|c2482998c6e893594166a9b0b4f9ac9335251fe4d5e38939315997a308906723|GAMES/PRINCE
 stunts.zip|$A/stunts_demo_disk/stunts_demo_disk.zip|f502478813f572b0027b52d81c908ff0fadd956517b54d15ce7be560525ed613|GAMES/STUNTS
+carma.zip|$A/carmdemo/carmdemo.zip|b11f81f57fcd657f00af308e61dd5e5d601069a19b82c0262362773f389576b1|GAMES/CARMA
+ootw.zip|$A/OutOfThisWorldDemo/ootwdemo.zip|84631d1af62a6a4f50861fba740813773330a663498a3245ebea6b6afa68465a|GAMES/ANOTHER
+telix.zip|$A/TLX3211_ZIP/TLX3211.ZIP|965b5b11b1f42ef4589ea7b34c1c46fc23ea679b9a915914687a903a02da83ac|PROGRAMS/TELIX
 tp55.zip|$A/TurboPascal55/tp55.zip|a04ff65555f88cd7714a11362c6f625f254932679ad5623b207015893ef638b6|PROGRAMS/TP55
 LIST
 )
@@ -69,6 +72,15 @@ if [ -d "$STAGE/GAMES/LEMMINGS/LEMMINGS" ]; then mv "$STAGE/GAMES/LEMMINGS/LEMMI
 if [ -d "$STAGE/GAMES/STUNTS/stunts_demo_disk/stunts_demo_disk" ]; then
   mv "$STAGE/GAMES/STUNTS/stunts_demo_disk/stunts_demo_disk"/* "$STAGE/GAMES/STUNTS/" && rm -rf "$STAGE/GAMES/STUNTS/stunts_demo_disk"
 fi
+
+# Carmageddon: sonido configurado para la Sound Blaster 16 emulada (A220 I5 D1)
+printf '[DIGITAL]\r\nDeviceName  = Sound Blaster 16/AWE32\r\nDeviceIRQ   = 5\r\nDeviceDMA   = 1\r\nDevicePort  = 0x220\r\nDeviceID    = 0xe015\r\n\r\n[MIDI]\r\nDeviceName  = No MIDI Device\r\nDevicePort  = 0xffffffff\r\nDeviceID    = 0xffffffff\r\n' > "$STAGE/GAMES/CARMA/S3.INI"
+
+# Another World (Out of This World): quitar el COMMAND.COM de MS-DOS que trae el zip
+rm -f "$STAGE/GAMES/ANOTHER/COMMAND.COM"
+
+# Telix: el zip trae cuatro zips internos
+for z in "$STAGE"/PROGRAMS/TELIX/TLX321*.ZIP; do unzip -qo "$z" -d "$STAGE/PROGRAMS/TELIX" && rm -f "$z"; done
 
 # Turbo Pascal: Disk1 va en TP55, Disk2 en TP55\DISK2
 mv "$STAGE/PROGRAMS/TP55/Disk1"/* "$STAGE/PROGRAMS/TP55/" && rmdir "$STAGE/PROGRAMS/TP55/Disk1"
