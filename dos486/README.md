@@ -121,10 +121,17 @@ conexión ("BLOCKED"). La conexión directa por el módem de DOSBox no se pudo
 probar desde el entorno de construcción, que bloquea telnet. Comprobado: Telix responde `OK` a `ATZ` con el módem
 emulado y `ATDT` intenta la conexión.
 
-En la versión web el botón `BBS` muestra un directorio de esos mismos BBS. Cada
-entrada es un enlace que abre una sesión telnet **real** en una pestaña nueva con
-fTelnet (`embed-v2.ftelnet.ca`, terminal web cuyo proxy público convierte
-WebSocket en telnet). La página no puede conectarse por sí misma: el visor bloquea
+En la versión web el botón `BBS` muestra un directorio de esos mismos BBS y conecta
+de verdad por telnet a través del puente WebSocket público de fTelnet
+(`wss://p-us-east.ftelnet.ca/<host>/<puerto>`, subprotocolo `binary`).
+
+- **Página abierta directamente** (servidor propio o local): la sesión se ve dentro
+  de la misma pantalla de DOS, con un terminal ANSI/telnet propio (CP437, colores,
+  posición del cursor, negociación telnet con TTYPE=ANSI y NAWS 80x25). Probado
+  el 27-11-2026 contra `vert.synchro.net`: el BBS lo reconoce como "Telnet,
+  80x25 CP437 / ANSI" y se entra como Guest. `?proxy=ws://...` cambia el puente.
+- **Dentro del visor de claude.ai**: el visor bloquea las conexiones externas, así
+  que cada entrada abre la sesión en una pestaña nueva con el terminal de fTelnet. La página no puede conectarse por sí misma: el visor bloquea
 las conexiones externas y el emulador en WebAssembly no tiene red. El sonido del
 módem y la línea `CONNECT` de la página son solo ambientación del marcado.
 Probado: el puente de fTelnet conectó con los cuatro BBS del directorio y devolvió

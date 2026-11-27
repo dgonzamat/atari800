@@ -76,6 +76,7 @@ button:focus-visible { outline: 2px solid var(--key); outline-offset: 2px; }
     <canvas id="cv" width="720" height="400" hidden></canvas>
     <pre class="text" id="txt" hidden></pre>
     <div class="off" id="off">Pulsa Encender</div>
+    <input id="mkb" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Teclado para el BBS" style="position:absolute;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;padding:0">
   </div>
 
   <div class="bar">
@@ -359,7 +360,7 @@ $('power').addEventListener('click', async () => {
 const PAL = ['#000000', '#0000aa', '#00aa00', '#00aaaa', '#aa0000', '#aa00aa', '#aa5500', '#aaaaaa',
              '#555555', '#5555ff', '#55ff55', '#55ffff', '#ff5555', '#ff55ff', '#ffff55', '#ffffff'];
 const COLS = 80, ROWS = 25;
-const term = { rows: [], x: 0, y: 0, fg: 7, cps: 1440 };
+const term = { rows: [], x: 0, y: 0, fg: 7, bg: 0, cps: 1440 };
 let bbsActive = false, bbsToken = 0, keyWaiter = null, savedCmds = null;
 class BbsAbort extends Error {}
 const check = (tok) => { if (!bbsActive || tok !== bbsToken) throw new BbsAbort(); };
@@ -379,7 +380,7 @@ function tPut(ch) {
   else {
     if (term.x >= COLS) { term.x = 0; term.y++; }
     if (term.y >= ROWS) { term.rows.shift(); term.rows.push([]); term.y = ROWS - 1; }
-    term.rows[term.y][term.x] = [ch, term.fg]; term.x++;
+    term.rows[term.y][term.x] = [ch, term.fg, term.bg]; term.x++;
   }
   if (term.y >= ROWS) { term.rows.shift(); term.rows.push([]); term.y = ROWS - 1; }
 }
@@ -389,11 +390,11 @@ function tRender() {
   let html = '';
   for (let y = 0; y < ROWS; y++) {
     const row = term.rows[y] || []; let cur = -1, seg = '';
-    const flush = () => { if (seg) html += cur < 0 ? seg : `<span style="color:${PAL[cur]}">${seg}</span>`; seg = ''; };
+    const flush = () => { if (seg) { if (cur < 0) html += seg; else { const f = cur & 15, b = cur >> 4; html += `<span style="color:${PAL[f]}${b ? ';background:' + PAL[b] : ''}">${seg}</span>`; } } seg = ''; };
     const len = Math.max(row.length, y === term.y ? term.x + 1 : 0);
     for (let x = 0; x < len; x++) {
       if (y === term.y && x === term.x) { flush(); cur = -1; html += '<span class="blink">_</span>'; continue; }
-      const c = row[x], col = c ? c[1] : 7, ch = c ? c[0] : ' ';
+      const c = row[x], col = c ? (c[1] | ((c[2] || 0) << 4)) : 7, ch = c ? c[0] : ' ';
       if (col !== cur) { flush(); cur = col; }
       seg += escH(ch);
     }
@@ -429,7 +430,7 @@ function box(title, lines, w, c = 9) {
 function setHotkeys(list) {
   $('cmds').innerHTML = list.map(([k, label, href]) => href
     ? `<a class="hk" href="${href}" target="_blank" rel="noopener" data-bbs="${k}"><span class="c">${k}</span><span class="t">${label} ↗</span></a>`
-    : `<button type="button" data-bbs="${k === '\r' ? 'ENTER' : k}"><span class="c">${k === '\r' ? '⏎' : k}</span><span class="t">${label}</span></button>`).join('');
+    : `<button type="button" data-bbs="${k === '\r' ? 'ENTER' : k}"><span class="c">${({ '\r': '⏎', ENTER: '⏎', ESC: 'Esc', SPC: '␣', HANG: '☎', KB: '⌨' })[k] || k}</span><span class="t">${label}</span></button>`).join('');
 }
 function feedKey(k, fromLink) {
   if (!keyWaiter) return;
@@ -500,6 +501,138 @@ function ftelnetUrl(host, port) {
   return 'https://embed-v2.ftelnet.ca/connect/?' + q.toString();
 }
 
+/* ---------- Sesion real dentro de la pantalla (solo con la pagina abierta directamente) ---------- */
+/* Dentro del visor de claude.ai las conexiones externas estan bloqueadas: ahi se usa la pestana nueva. */
+const STANDALONE = (() => { try { return window.top === window.self; } catch (_) { return false; } })();
+const PROXY = new URLSearchParams(location.search).get('proxy') || 'wss://p-us-east.ftelnet.ca';
+const CP437 = 'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ';
+const ANSI2CGA = [0, 4, 2, 6, 1, 5, 3, 7];
+let live = null;   /* { ws, send } mientras hay sesion */
+
+function liveTerm() {
+  const t = { bold: false, fgA: 7, bgA: 0, rev: false, saved: [0, 0], st: 0, params: '', tn: 0, tnCmd: 0, sb: false };
+  const apply = () => { let f = ANSI2CGA[t.fgA] + (t.bold ? 8 : 0), b = ANSI2CGA[t.bgA]; if (t.rev) [f, b] = [b, f]; term.fg = f; term.bg = b; };
+  const put = (ch) => { if (term.x >= COLS) { term.x = 0; lf(); } term.rows[term.y][term.x] = [ch, term.fg, term.bg]; term.x++; };
+  const lf = () => { term.y++; if (term.y >= ROWS) { term.rows.shift(); term.rows.push([]); term.y = ROWS - 1; } };
+  const clearRow = (y, from, to) => { const r = term.rows[y]; for (let x = from; x < to; x++) r[x] = undefined; };
+  function csi(final) {
+    const ps = t.params.replace(/[?!=]/g, '').split(';').map(n => parseInt(n, 10));
+    const n0 = isNaN(ps[0]) ? 1 : ps[0];
+    switch (final) {
+      case 'm': for (const p of (t.params === '' ? [0] : ps)) {
+          if (isNaN(p) || p === 0) { t.bold = false; t.fgA = 7; t.bgA = 0; t.rev = false; }
+          else if (p === 1) t.bold = true; else if (p === 22) t.bold = false; else if (p === 7) t.rev = true; else if (p === 27) t.rev = false;
+          else if (p >= 30 && p <= 37) t.fgA = p - 30; else if (p === 39) t.fgA = 7;
+          else if (p >= 40 && p <= 47) t.bgA = p - 40; else if (p === 49) t.bgA = 0;
+          else if (p >= 90 && p <= 97) { t.fgA = p - 90; t.bold = true; } }
+        apply(); break;
+      case 'H': case 'f': term.y = Math.min(ROWS - 1, Math.max(0, (isNaN(ps[0]) ? 1 : ps[0]) - 1)); term.x = Math.min(COLS - 1, Math.max(0, (isNaN(ps[1]) ? 1 : ps[1]) - 1)); break;
+      case 'A': term.y = Math.max(0, term.y - n0); break;
+      case 'B': term.y = Math.min(ROWS - 1, term.y + n0); break;
+      case 'C': term.x = Math.min(COLS - 1, term.x + n0); break;
+      case 'D': term.x = Math.max(0, term.x - n0); break;
+      case 'J': if (isNaN(ps[0]) || ps[0] === 0) { clearRow(term.y, term.x, COLS); for (let y = term.y + 1; y < ROWS; y++) term.rows[y] = []; }
+        else if (ps[0] === 1) { for (let y = 0; y < term.y; y++) term.rows[y] = []; clearRow(term.y, 0, term.x + 1); }
+        else { term.rows = Array.from({ length: ROWS }, () => []); term.x = 0; term.y = 0; } break;
+      case 'K': if (isNaN(ps[0]) || ps[0] === 0) clearRow(term.y, term.x, COLS); else if (ps[0] === 1) clearRow(term.y, 0, term.x + 1); else term.rows[term.y] = []; break;
+      case 's': t.saved = [term.x, term.y]; break;
+      case 'u': [term.x, term.y] = t.saved; break;
+      case 'n': if (ps[0] === 6 && live) live.send(`\x1b[${term.y + 1};${term.x + 1}R`); break;
+      case 'c': if (live && t.params === '') live.send('\x1b[?1;0c'); break;
+    }
+  }
+  function telnet(b) {   /* devuelve true si el byte pertenece a una orden telnet */
+    const IAC = 255;
+    if (t.tn === 0) { if (b === IAC) { t.tn = 1; return true; } return t.sb; }
+    if (t.tn === 1) {
+      if (b === IAC) { t.tn = 0; return t.sb; }                 /* 255 literal */
+      if (b === 250) { t.sb = true; t.sbOpt = -1; t.tn = 0; return true; }
+      if (b === 240) { t.sb = false; t.tn = 0; if (t.sbOpt === 24 && live) live.send('\xff\xfa\x18\x00ANSI\xff\xf0'); return true; }
+      if (b >= 251 && b <= 254) { t.tnCmd = b; t.tn = 2; return true; }
+      t.tn = 0; return true;
+    }
+    if (t.tn === 2) {
+      const o = b, c = t.tnCmd; t.tn = 0;
+      if (!live) return true;
+      if (c === 253) {                                            /* DO */
+        if (o === 24 || o === 0 || o === 3) live.send('\xff\xfb' + String.fromCharCode(o));
+        else if (o === 31) live.send('\xff\xfb\x1f\xff\xfa\x1f\x00\x50\x00\x19\xff\xf0');   /* NAWS 80x25 */
+        else live.send('\xff\xfc' + String.fromCharCode(o));
+      } else if (c === 251) {                                     /* WILL */
+        live.send((o === 1 || o === 3 || o === 0 ? '\xff\xfd' : '\xff\xfe') + String.fromCharCode(o));
+      }
+      return true;
+    }
+    return true;
+  }
+  return function feed(bytes) {
+    for (const b of bytes) {
+      if (t.sb) { if (t.sbOpt === -1 && t.tn === 0 && b !== 255) { t.sbOpt = b; continue; } }
+      if (telnet(b)) continue;
+      if (t.st === 1) { if (b === 0x5b) { t.st = 2; t.params = ''; } else t.st = 0; continue; }
+      if (t.st === 2) { const ch = String.fromCharCode(b); if (/[0-9;?!=]/.test(ch)) t.params += ch; else { csi(ch); t.st = 0; } continue; }
+      if (b === 0x1b) { t.st = 1; continue; }
+      if (b === 13) term.x = 0; else if (b === 10) lf(); else if (b === 8) term.x = Math.max(0, term.x - 1);
+      else if (b === 9) term.x = Math.min(COLS - 1, (term.x + 8) & ~7); else if (b === 7) SFX.beep();
+      else if (b === 12) { term.rows = Array.from({ length: ROWS }, () => []); term.x = 0; term.y = 0; }
+      else if (b >= 32) put(b < 128 ? String.fromCharCode(b) : CP437[b - 128]);
+    }
+  };
+}
+
+async function liveSession(tok, host, port) {
+  const feed = liveTerm(); const queue = []; let opened = false, closed = false, err = '';
+  let ws = null;
+  try {
+    await print('\n', tok); await typeAT(tok, `ATDT ${host}`);
+    statusEl.textContent = `Llamando a ${host}…`;
+    const tm = soundOn ? modemSound() : null;          /* ambientacion del marcado; la conexion se abre al final */
+    const t0 = performance.now(), T = tm ? Math.min(tm.total, 9000) : 1200;
+    while (performance.now() - t0 < T) { check(tok); await sleep(50); }
+    if (tm) tm.stop();
+    ws = new WebSocket(`${PROXY}/${host}/${port}`, ['binary']);   /* mismo subprotocolo que fTelnet */
+    ws.binaryType = 'arraybuffer';
+    const toBytes = (m) => typeof m === 'string' ? Array.from(m, c => c.charCodeAt(0) & 255) : Array.from(new Uint8Array(m));
+    ws.onopen = () => { opened = true; };
+    ws.onmessage = (e) => { queue.push(toBytes(e.data)); };
+    ws.onerror = () => { err = 'no se pudo abrir la conexión'; };
+    ws.onclose = () => { closed = true; };
+    live = { ws, send: (s) => { if (ws.readyState === 1) ws.send(Uint8Array.from(s, c => c.charCodeAt(0) & 255).buffer); } };
+    for (let i = 0; i < 150 && !opened && !closed; i++) { check(tok); await sleep(100); }
+    if (!opened) { await print(`\n{15}NO CARRIER{7}  {8}(${err || 'sin respuesta'}){7}\n`, tok, 3000); await sleep(1500); return; }
+    await print(`\n{15}CONNECT 57600{7}\n`, tok, 4000);
+    term.fg = 7; term.bg = 0;
+    statusEl.textContent = `Conectado a ${host}:${port} (telnet real vía fTelnet). Escribe en la pantalla.`;
+    liveKeys = true;
+    setHotkeys([['KB', 'Teclado'], ['ENTER', 'Enter'], ['ESC', 'Esc'], ['SPC', 'Espacio'], ['HANG', 'Colgar']]);
+    while (!closed || queue.length) {
+      check(tok);
+      if (queue.length) { while (queue.length) feed(queue.shift()); tRender(); }   /* responde al instante a la negociacion */
+      if (closed) break;
+      await new Promise(r => setTimeout(r, 16));
+    }
+    await print('\r\n{15}NO CARRIER{7}\r\n', tok, 3000); await sleep(1200);
+  } finally {
+    liveKeys = false; live = null;
+    try { ws && ws.close(); } catch (_) {}
+  }
+}
+let liveKeys = false;
+$('mkb').addEventListener('input', (e) => { const v = e.target.value; e.target.value = ''; if (live && v) { for (const ch of v) { SFX.key(true); const i = CP437.indexOf(ch); live.send(ch.charCodeAt(0) < 128 ? ch : (i >= 0 ? String.fromCharCode(128 + i) : '?')); } } });
+$('mkb').addEventListener('keydown', (e) => { if (!live) return; if (e.key === 'Enter') { e.preventDefault(); live.send('\r'); } else if (e.key === 'Backspace') { e.preventDefault(); live.send('\b'); } e.stopPropagation(); });
+function liveKey(e) {   /* teclado del PC -> BBS */
+  if (!live) return false;
+  const map = { Enter: '\r', Backspace: '\b', Tab: '\t', Escape: '\x1b', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D',
+    Home: '\x1b[H', End: '\x1b[K', Delete: '\x7f' };
+  let s = map[e.key];
+  if (!s && e.key.length === 1) {
+    if (e.ctrlKey && /[a-z]/i.test(e.key)) s = String.fromCharCode(e.key.toUpperCase().charCodeAt(0) - 64);
+    else { const i = CP437.indexOf(e.key); s = e.key.charCodeAt(0) < 128 ? e.key : (i >= 0 ? String.fromCharCode(128 + i) : '?'); }
+  }
+  if (!s) return false;
+  live.send(s); return true;
+}
+
 async function typeAT(tok, s) {
   for (const ch of s) { check(tok); SFX.key(true); tPut(ch); tRender(); await sleep(90 + Math.random() * 60); }
   tPut('\n'); tRender(); SFX.key(true); await sleep(250);
@@ -511,14 +644,16 @@ async function bbsSession(tok) {
   await typeAT(tok, 'ATZ'); await print('OK\n\n', tok, 3000);
   let s = '{11}Directorio: BBS reales en linea (telnet por Internet, probados el 27-11-2026){7}\n\n';
   BBS_LIST.forEach(([h, p, d], i) => { s += `  {14}${i + 1}{7}. {15}${h.padEnd(28)}{8}puerto ${p}{7}\n`; });
-  s += '\n{7}Elige un BBS con los botones de abajo. La sesion real se abre en una\n';
-  s += 'pestana nueva con el terminal fTelnet (pasa por su proxy publico),\n';
-  s += 'porque esta pagina no tiene acceso a la red.\n\n{8}[V] volver a DOS{7}\n';
+  if (STANDALONE) s += '\n{7}Elige un BBS (1-4). La conexion es real: telnet a traves del puente\nWebSocket publico de fTelnet, dentro de esta misma pantalla.\n\n{8}[V] volver a DOS{7}\n';
+  else { s += '\n{7}Elige un BBS con los botones de abajo. Dentro de claude.ai la pagina no\n';
+    s += 'tiene acceso a la red: la sesion real se abre en una pestana nueva con\n';
+    s += 'fTelnet. Abierta directamente en tu navegador, se ve en esta pantalla.\n\n{8}[V] volver a DOS{7}\n'; }
   await print(s, tok, 3000);
-  setHotkeys([...BBS_LIST.map(([h, p], i) => [String(i + 1), h, ftelnetUrl(h, p)]), ['V', 'Volver a DOS']]);
-  const k = await new Promise(r => { keyWaiter = { resolve: r, allowed: 'V1234', linkOnly: true }; });
+  setHotkeys([...BBS_LIST.map(([h, p], i) => [String(i + 1), h, STANDALONE ? null : ftelnetUrl(h, p)]), ['V', 'Volver a DOS']]);
+  const k = await new Promise(r => { keyWaiter = { resolve: r, allowed: 'V1234', linkOnly: !STANDALONE }; });
   if (k === 'V') return;
   const [host, port] = BBS_LIST[+k - 1];
+  if (STANDALONE) { await liveSession(tok, host, port); return; }
   let hung = false;
   const hang = getKey(tok, 'V', [['V', 'Colgar y volver a DOS']]).then(() => { hung = true; });
   await print('\n', tok); await typeAT(tok, `ATDT ${host}`);
@@ -551,6 +686,7 @@ async function bbsStart() {
   finally { if (tok === bbsToken) bbsEnd(); }
 }
 function bbsEnd() {
+  if (live) { try { live.ws.close(); } catch (_) {} live = null; } liveKeys = false;
   if (!bbsActive) return;
   bbsActive = false; bbsToken++; keyWaiter = null;
   txt.classList.remove('term'); txt.style.fontSize = '';
@@ -572,7 +708,17 @@ $('cmds').addEventListener('click', (e) => {
   if (lnk) { ensureAudio(); feedKey(lnk.dataset.bbs, true); return; }   /* el enlace abre la sesion real; no se cancela */
   const b = e.target.closest('button'); if (!b || b.disabled) return;
   ensureAudio();
-  if (b.dataset.bbs !== undefined) { SFX.key(true); feedKey(b.dataset.bbs === 'ENTER' ? '\r' : b.dataset.bbs); return; }
+  if (b.dataset.bbs !== undefined) {
+    SFX.key(true);
+    if (liveKeys && live) {
+      const m = { ENTER: '\r', ESC: '\x1b', SPC: ' ' };
+      if (b.dataset.bbs === 'HANG') live.ws.close();
+      else if (b.dataset.bbs === 'KB') { $('mkb').focus(); return; }
+      else live.send(m[b.dataset.bbs] || '');
+      screenEl.focus(); return;
+    }
+    feedKey(b.dataset.bbs === 'ENTER' ? '\r' : b.dataset.bbs); return;
+  }
   if (b.dataset.cmd === 'BBS') { bbsStart(); return; }
   typeCommand(b.dataset.cmd);
 });
@@ -594,6 +740,13 @@ function code2key(code) {
 }
 function keyEvent(e, down) {
   if (e.metaKey || e.ctrlKey && e.key !== 'Control') { if (!bbsActive) { /* sigue */ } }
+  if (bbsActive && liveKeys) {
+    if (e.target.closest && e.target.closest('a, button, input')) return;
+    if (down && liveKey(e)) { e.preventDefault(); ensureAudio(); SFX.key(true); }
+    else if (!down) SFX.key(false);
+    if (e.key.length === 1 || /^(Enter|Backspace|Tab|Escape|Arrow)/.test(e.key)) e.preventDefault();
+    return;
+  }
   if (bbsActive) {
     if (e.target.closest && e.target.closest('a')) return;
     if (e.key.length === 1 || e.key === 'Enter' || e.key === 'Backspace') e.preventDefault();
