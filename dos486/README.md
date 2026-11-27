@@ -118,9 +118,14 @@ conexión completa **no se pudo probar** desde el entorno donde se armó esto):
 `bbs.electronicchicken.com`. Comprobado: Telix responde `OK` a `ATZ` con el módem
 emulado y `ATDT` intenta la conexión.
 
-La versión web **no** puede conectarse a BBS reales: el visor bloquea las
-conexiones externas y el emulador en WebAssembly no tiene red. Su botón `BBS`
-es una simulación (módem, "EL 486 BBS", mensajes y archivos ficticios).
+En la versión web el botón `BBS` muestra un directorio de esos mismos BBS. Cada
+entrada es un enlace que abre una sesión telnet **real** en una pestaña nueva con
+fTelnet (`embed-v2.ftelnet.ca`, terminal web cuyo proxy público convierte
+WebSocket en telnet). La página no puede conectarse por sí misma: el visor bloquea
+las conexiones externas y el emulador en WebAssembly no tiene red. El sonido del
+módem y la línea `CONNECT` de la página son solo ambientación del marcado.
+No se pudo probar la sesión completa porque el entorno de construcción no deja
+pasar WebSocket; sí se comprobó que el enlace abre la página de fTelnet con el BBS.
 
 ## Estado de pruebas
 

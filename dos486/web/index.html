@@ -34,7 +34,12 @@ body {
   white-space: pre-wrap; overflow: hidden; }
 .text .err { color: #ff6b6b; }
 .text.term { padding: 2% 2%; line-height: 1.12; white-space: pre; font-family: "JetBrains Mono", ui-monospace, monospace; }
-.cmds button[data-bbs] .c::before { content: none; }
+.cmds button[data-bbs] .c::before, .cmds a.hk .c::before { content: none; }
+.cmds a.hk { min-width: 0; text-decoration: none; background: var(--panel); color: var(--ink); border: 1px solid var(--key); border-radius: 6px;
+  padding: 8px 12px 9px; display: flex; flex-direction: column; gap: 2px; }
+.cmds a.hk .c { font: 400 24px/1 var(--f-crt); color: var(--key); }
+.cmds a.hk .t { font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
+.cmds a.hk:focus-visible { outline: 2px solid var(--key); outline-offset: 2px; }
 .text .w { color: #fff; } .text .c { color: #55ffff; }
 .off { position: absolute; inset: 0; display: grid; place-items: center; color: #55575e; font: 500 15px var(--f-body); text-align: center; padding: 16px; }
 .text .blink { animation: blink 1s steps(1) infinite; }
@@ -88,7 +93,7 @@ const CMDS = [
   ['DOOM', 'DOOM 1.9 (1993)'], ['WOLF3D', 'Wolfenstein 3D (1992)'], ['DUKE3D', 'Duke Nukem 3D (1996)'], ['DUKE2', 'Duke Nukem II (1993)'],
   ['HERETIC', 'Heretic (1994)'], ['KEEN1', 'Commander Keen 1 (1990)'], ['KEEN4', 'Commander Keen 4 (1991)'], ['DAVE', 'Dangerous Dave (1990)'],
   ['SCORCH', 'Scorched Earth (1991)'], ['PINBALL', 'Epic Pinball (1993)'], ['SKYROADS', 'SkyRoads (1993)'], ['ZZT', 'ZZT (1991)'],
-  ['LEMMINGS', 'Lemmings demo (1991)'], ['PRINCE', 'Prince of Persia demo (1990)'], ['STUNTS', 'Stunts demo (1990)'], ['CARMA', 'Carmageddon demo (1997)'], ['ANOTHER', 'Another World demo (1991)'], ['TP', 'Turbo Pascal 5.5 (1989)'], ['EDIT', 'Editor de texto'], ['BBS', 'BBS simulado (sin red)'],
+  ['LEMMINGS', 'Lemmings demo (1991)'], ['PRINCE', 'Prince of Persia demo (1990)'], ['STUNTS', 'Stunts demo (1990)'], ['CARMA', 'Carmageddon demo (1997)'], ['ANOTHER', 'Another World demo (1991)'], ['TP', 'Turbo Pascal 5.5 (1989)'], ['EDIT', 'Editor de texto'], ['BBS', 'BBS reales por Internet'],
 ];
 const $ = (id) => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d'), txt = $('txt'), screenEl = $('screen'), statusEl = $('status');
@@ -371,8 +376,7 @@ $('power').addEventListener('click', async () => {
 });
 
 /* ======================================================================
-   BBS por modem (simulado). No hay conexion real: el modem, el BBS
-   "EL 486 BBS", sus usuarios y mensajes son ficticios.
+   Terminal de BBS: marca y abre una sesion real con fTelnet (pestana nueva).
    ====================================================================== */
 const PAL = ['#000000', '#0000aa', '#00aa00', '#00aaaa', '#aa0000', '#aa00aa', '#aa5500', '#aaaaaa',
              '#555555', '#5555ff', '#55ff55', '#55ffff', '#ff5555', '#ff55ff', '#ffff55', '#ffffff'];
@@ -445,11 +449,14 @@ function box(title, lines, w, c = 9) {
 
 /* ---------- teclas: teclado fisico o botones de abajo ---------- */
 function setHotkeys(list) {
-  $('cmds').innerHTML = list.map(([k, label]) => `<button type="button" data-bbs="${k === '\r' ? 'ENTER' : k}"><span class="c">${k === '\r' ? '⏎' : k}</span><span class="t">${label}</span></button>`).join('');
+  $('cmds').innerHTML = list.map(([k, label, href]) => href
+    ? `<a class="hk" href="${href}" target="_blank" rel="noopener" data-bbs="${k}"><span class="c">${k}</span><span class="t">${label} ↗</span></a>`
+    : `<button type="button" data-bbs="${k === '\r' ? 'ENTER' : k}"><span class="c">${k === '\r' ? '⏎' : k}</span><span class="t">${label}</span></button>`).join('');
 }
-function feedKey(k) {
+function feedKey(k, fromLink) {
   if (!keyWaiter) return;
   const w = keyWaiter;
+  if (w.linkOnly && k !== 'V' && k !== 'v' && !fromLink) return;   /* un BBS solo se elige con su enlace */
   if (w.line) {
     if (k === '\r') { keyWaiter = null; tPut('\n'); tRender(); w.resolve(w.buf); return; }
     if (k === '\b') { if (w.buf) { w.buf = w.buf.slice(0, -1); tBack(); tRender(); } return; }
@@ -492,33 +499,28 @@ function modemSound() {
   fsk(n2, 0.55, 1650, 1850, 0.08); n2 += 0.6;                                          // V.21
   tone(n2, 1800, 0.55, 0.08); n2 += 0.55; tone(n2, 600, 0.45, 0.06); tone(n2, 3000, 0.45, 0.05); n2 += 0.5;   // "biiii-buuuu"
   noise(n2, 1.1, 1800, 0.6, 0.35); noise(n2 + 1.1, 0.45, 1000, 0.9, 0.3); noise(n2 + 1.55, 1.3, 2300, 0.5, 0.4); n2 += 2.9; // "kssshhhh"
-  return { ring: (ring - t0) * 1000, answer: (ans - t0) * 1000, train: (ans + 2 - t0) * 1000, total: (n2 - t0) * 1000 };
+  return { ring: (ring - t0) * 1000, answer: (ans - t0) * 1000, train: (ans + 2 - t0) * 1000, total: (n2 - t0) * 1000,
+           stop() { line.gain.cancelScheduledValues(audio.currentTime); line.gain.setValueAtTime(0, audio.currentTime); } };
 }
 
-/* ---------- contenido del BBS (ficticio) ---------- */
-const LOGO = [
-  '███████╗██╗         ██╗  ██╗ █████╗  ██████╗     ██████╗ ██████╗ ███████╗',
-  '██╔════╝██║         ██║  ██║██╔══██╗██╔════╝     ██╔══██╗██╔══██╗██╔════╝',
-  '█████╗  ██║         ███████║╚█████╔╝███████╗     ██████╔╝██████╔╝███████╗',
-  '██╔══╝  ██║         ╚════██║██╔══██╗██╔═══██╗    ██╔══██╗██╔══██╗╚════██║',
-  '███████╗███████╗         ██║╚█████╔╝╚██████╔╝    ██████╔╝██████╔╝███████║',
-  '╚══════╝╚══════╝         ╚═╝ ╚════╝  ╚═════╝     ╚═════╝ ╚═════╝ ╚══════╝'];
-const LOGO_COL = [12, 12, 14, 14, 6, 6];
-const MSGS = [
-  ['SysOp', 'Bienvenidos al BBS', '02-03-94', 'Hola a todos. El BBS funciona de 22:00 a 08:00, cuando la\nlinea de la casa queda libre. Dos nodos, 14.400 baudios.\nSubir archivos da credito de descarga: 1 KB subido = 3 KB\nbajados. Nada de software pirata o borro la cuenta.\n                                              -- SysOp'],
-  ['Pixel', '¿IRQ de la Sound Blaster?', '04-03-94', 'El Doom me queda mudo. ¿Que pongo en SETUP?\n\n> Re: pon IRQ 5, DMA 1, puerto 220. Y revisa la linea\n> SET BLASTER=A220 I5 D1 H5 T6 en el AUTOEXEC.BAT.   -- SysOp'],
-  ['ModemMan', '¡Ya tengo modem de 14.4!', '05-03-94', 'Me cambie del 2400 al 14.400. El Wolf3D shareware bajo en\n8 minutos en vez de 45. Lo malo: mi mama vio la cuenta del\ntelefono. Desde ahora solo llamo de noche.'],
+/* ---------- BBS reales por Internet (telnet a traves de fTelnet) ---------- */
+/* La pagina no puede abrir conexiones telnet: el visor bloquea la red. La sesion real
+   se abre en una pestana nueva con fTelnet (ftelnet.ca), un terminal web cuyo proxy
+   publico convierte WebSocket en telnet. Lista de BBS segun lo conocido; pueden cambiar. */
+const BBS_LIST = [
+  ['vert.synchro.net', 23, ''],
+  ['bbs.fozztexx.com', 23, ''],
+  ['bbs.electronicchicken.com', 23, ''],
+  ['blackflag.acid.org', 23, ''],
 ];
-const FILES = [
-  ['DOOM19S.ZIP', 2451850, 'DOOM 1.9 shareware, episodio 1', 'DOOM'],
-  ['WOLF3D14.ZIP', 670522, 'Wolfenstein 3D shareware v1.4', 'WOLF3D'],
-  ['KEEN1.ZIP', 194029, 'Commander Keen 1 shareware', 'KEEN1'],
-  ['SCORCH15.ZIP', 648032, 'Scorched Earth 1.5 shareware', 'SCORCH'],
-  ['ZZT32.ZIP', 128078, 'ZZT 3.2 shareware', 'ZZT'],
-  ['STUNTDEM.ZIP', 629477, 'Stunts, demo oficial', 'STUNTS'],
-];
-const fmtN = (n) => n.toLocaleString('es-CL');
-const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+function ftelnetUrl(host, port) {
+  const q = new URLSearchParams({
+    BareLFtoCRLF: 'false', BitsPerSecond: '57600', ConnectionType: 'telnet', Emulation: 'ansi-bbs', Enter: '\\r',
+    Font: 'CP437', ForceWss: 'false', FullScreenOnConnect: 'false', Hostname: host, LocalEcho: 'false',
+    NegotiateLocalEcho: 'true', Port: String(port), ProxyHostname: 'p-us-east.ftelnet.ca', ProxyPort: '80',
+    ProxyPortSecure: '443', ScreenColumns: '80', ScreenRows: '25', SendLocation: 'false', AutoConnect: 'true' });
+  return 'https://embed-v2.ftelnet.ca/connect/?' + q.toString();
+}
 
 async function typeAT(tok, s) {
   for (const ch of s) { check(tok); SFX.key(true); tPut(ch); tRender(); await sleep(90 + Math.random() * 60); }
@@ -526,139 +528,37 @@ async function typeAT(tok, s) {
 }
 
 async function bbsSession(tok) {
-  /* --- programa de terminal y marcado --- */
   term.fg = 7; tClear();
-  await print('{15}TERMINAL 2.1{7}  -  COM2  14400 baudios  8N1  ANSI\n{8}Teclas: Enter para continuar · el modem habla por el parlante (ATM1)\n\n', tok, 3000);
-  await print('{7}', tok); await typeAT(tok, 'ATZ'); await print('OK\n', tok, 3000);
-  await typeAT(tok, 'ATM1L2'); await print('OK\n\n', tok, 3000);
-  await print('{11}Directorio de marcado{7}\n  1. EL 486 BBS ............ 555-1993  {8}(BBS ficticio){7}\n\n', tok, 3000);
-  await typeAT(tok, 'ATDT 555-1993');
-  statusEl.textContent = 'Marcando 555-1993…';
-  const tm = soundOn ? modemSound() : null;
-  const T = tm || { ring: 2800, answer: 5000, train: 7000, total: 9500 };
+  await print('{15}TERMINAL{7}  -  COM1  57600 baudios  8N1  ANSI\n\n', tok, 3000);
+  await typeAT(tok, 'ATZ'); await print('OK\n\n', tok, 3000);
+  let s = '{11}Directorio: BBS reales que siguen en linea (telnet por Internet){7}\n\n';
+  BBS_LIST.forEach(([h, p, d], i) => { s += `  {14}${i + 1}{7}. {15}${h.padEnd(28)}{8}puerto ${p}{7}\n`; });
+  s += '\n{7}Elige un BBS con los botones de abajo. La sesion real se abre en una\n';
+  s += 'pestana nueva con el terminal fTelnet (pasa por su proxy publico),\n';
+  s += 'porque esta pagina no tiene acceso a la red.\n\n{8}[V] volver a DOS{7}\n';
+  await print(s, tok, 3000);
+  setHotkeys([...BBS_LIST.map(([h, p], i) => [String(i + 1), h, ftelnetUrl(h, p)]), ['V', 'Volver a DOS']]);
+  const k = await new Promise(r => { keyWaiter = { resolve: r, allowed: 'V1234', linkOnly: true }; });
+  if (k === 'V') return;
+  const [host, port] = BBS_LIST[+k - 1];
+  let hung = false;
+  const hang = getKey(tok, 'V', [['V', 'Colgar y volver a DOS']]).then(() => { hung = true; });
+  await print('\n', tok); await typeAT(tok, `ATDT ${host}`);
+  statusEl.textContent = `Llamando a ${host}… la sesión real está en la pestaña nueva`;
+  const tm = (soundOn && !hung) ? modemSound() : null;
+  const T = tm || { total: 3000 };
   const t0 = performance.now();
-  const until = async (ms) => { while (performance.now() - t0 < ms) { check(tok); await sleep(50); } };
-  await until(T.ring); statusEl.textContent = 'Sonando…';
-  await print('{8}RINGING\n', tok, 3000);
-  await until(T.answer); statusEl.textContent = 'El BBS contestó: negociando la conexión…';
-  await until(T.total);
-  await print('\n{15}CONNECT 14400/ARQ/V42BIS{7}\n', tok, 3000);
-  statusEl.textContent = 'Conectado a 14.400 bps (simulación)';
-  await sleep(700);
-
-  /* --- pantalla de entrada --- */
-  term.cps = 1440;
-  let s = '{cls}\n';
-  LOGO.forEach((l, i) => { s += `{${LOGO_COL[i]}}   ${l}\n`; });
-  s += '\n{8}' + '─'.repeat(79) + '\n';
-  s += '{15}  EL 486 BBS {7}·{11} Nodo 1 de 2 {7}·{11} 14.400 baudios {7}·{11} Santiago, 1994 {8}  (BBS ficticio)\n';
-  s += '{8}' + '─'.repeat(79) + '\n\n';
-  s += '{11}  Nombre de usuario {8}(Enter = INVITADO){11}: {15}';
-  await print(s, tok);
-  let name = (await getLine(tok, 20, [['\r', 'Entrar como INVITADO']])).trim().toUpperCase() || 'INVITADO';
-  await print(`{7}  Verificando usuario {15}${name}{7}...`, tok); await sleep(600);
-  await print(` {10}OK{7}\n\n  Llamada numero {15}4.812{7} · Ultimo usuario: {15}MODEMMAN{7}\n  Tiempo restante hoy: {15}60 minutos{7}\n  Tienes {14}1 mensaje nuevo{7} en el foro General.\n\n{8}  [Pulsa una tecla]{7}`, tok);
-  await anyKey(tok);
-
-  /* --- menu principal --- */
-  const MENU = [['M', 'Mensajes'], ['A', 'Archivos'], ['J', 'Juego de puerta'], ['I', 'Pasarela Internet'], ['W', 'Quién está'], ['D', 'Desconectar']];
-  let minutes = 59;
-  for (;;) {
-    await print('{cls}\n' + box('MENU PRINCIPAL', [
-      '', '   {14}[M]{7} Mensajes              {14}[A]{7} Area de archivos',
-      '   {14}[J]{7} Juego de puerta       {14}[I]{7} Pasarela Internet',
-      '   {14}[W]{7} Quien esta conectado  {14}[D]{7} Desconectar', ''], 64) +
-      `\n{8}  ${name} · Tiempo restante: ${minutes} min\n\n{11}  Comando{7}: {15}`, tok);
-    const k = await getKey(tok, 'MAJIWD', MENU);
-    await print(k + '\n', tok); minutes = Math.max(1, minutes - 1);
-    if (k === 'M') await areaMensajes(tok);
-    else if (k === 'A') await areaArchivos(tok);
-    else if (k === 'J') await juegoPuerta(tok);
-    else if (k === 'I') await pasarelaInternet(tok);
-    else if (k === 'W') { await print('{cls}\n' + box('QUIEN ESTA CONECTADO', ['', `   {11}Nodo 1{7}  ${name.padEnd(12)} {8}Menu principal{7}`, '   {11}Nodo 2{7}  MODEMMAN     {8}Bajando WOLF3D14.ZIP{7}', ''], 60) + '\n{8}  [Pulsa una tecla]', tok); await anyKey(tok); }
-    else if (k === 'D') {
-      await print('{11}  ¿Desconectar? (S/N){7}: ', tok);
-      const y = await getKey(tok, 'SN', [['S', 'Sí'], ['N', 'No']]); await print(y + '\n', tok);
-      if (y === 'S') break;
-    }
+  while (!hung && performance.now() - t0 < T.total) { check(tok); await sleep(50); }
+  if (!hung) {
+    await print(`\n{15}CONNECT 57600{7}  {8}(${host}:${port} via fTelnet, en la pestana nueva){7}\n\n{8}[V] colgar y volver a DOS{7}\n`, tok, 3000);
+    statusEl.textContent = `Sesión real con ${host} abierta en la otra pestaña`;
+    await hang;
   }
-  await print('\n{14}  Gracias por llamar a EL 486 BBS. ¡Vuelve pronto!{7}\n', tok);
-  await sleep(900);
-  await print('\n{7}+++', tok, 30); await sleep(1100); await print('\nOK\n', tok, 3000);
+  if (tm) tm.stop();
+  await print('\n+++', tok, 30); await sleep(900); await print('\nOK\n', tok, 3000);
   await typeAT(tok, 'ATH0');
-  if (audio) { thump(audio.currentTime + 0.02, 90, 0.05, 0.25); }
-  await print('{15}NO CARRIER{7}\n', tok, 3000); await sleep(1400);
-}
-
-async function areaMensajes(tok) {
-  for (;;) {
-    const rows = MSGS.map(([de, asunto, fecha], i) => `  {14}${i + 1}{7}  ${de.padEnd(10)} ${asunto.padEnd(30)} {8}${fecha}{7}`);
-    await print('{cls}\n' + box('FORO GENERAL', ['', '  {8}#  De         Asunto                         Fecha{7}', ...rows, ''], 66) + '\n{11}  Lee un mensaje (1-3) o [V]olver{7}: {15}', tok);
-    const k = await getKey(tok, '123V', [['1', MSGS[0][1]], ['2', MSGS[1][1]], ['3', MSGS[2][1]], ['V', 'Volver']]);
-    if (k === 'V') return;
-    const [de, asunto, fecha, cuerpo] = MSGS[+k - 1];
-    await print(`{cls}\n{11}  De: {15}${de}   {11}Fecha: {15}${fecha}\n{11}  Asunto: {15}${asunto}\n{8}  ${'─'.repeat(60)}{7}\n\n` + cuerpo.split('\n').map(l => '  ' + l).join('\n') + '\n\n{8}  [Pulsa una tecla]{7}', tok);
-    await anyKey(tok);
-  }
-}
-
-async function areaArchivos(tok) {
-  for (;;) {
-    const rows = FILES.map(([f, size, desc], i) => `  {14}${i + 1}{7}  {15}${f.padEnd(13)}{11}${fmtN(size).padStart(10)}  {7}${desc.padEnd(31)}{8}${mmss(size * 10 / 14400).padStart(6)}{7}`);
-    await print('{cls}\n' + box('AREA DE ARCHIVOS · JUEGOS SHAREWARE', ['', '  {8}#  Archivo         Bytes  Descripcion                    a 14.4k{7}', ...rows, ''], 78) + '\n{11}  Baja un archivo (1-6) o [V]olver{7}: {15}', tok);
-    const k = await getKey(tok, '123456V', [...FILES.map((f, i) => [String(i + 1), f[0]]), ['V', 'Volver']]);
-    if (k === 'V') return;
-    const [f, size, , cmd] = FILES[+k - 1];
-    await print(`{cls}\n{11}  Archivo: {15}${f}{11}   Tamaño: {15}${fmtN(size)} bytes\n{11}  Protocolo: {15}ZMODEM{11}   Tiempo estimado a 14.400 bps: {15}${mmss(size * 10 / 14400)}\n\n{7}  Iniciando ZMODEM... {8}(la transferencia se muestra acelerada ×60){7}\n\n`, tok);
-    const secs = size * 10 / 14400, wall = Math.max(2, secs / 60);
-    const t0 = performance.now(); const row = term.y;
-    for (;;) {
-      check(tok);
-      const p = Math.min(1, (performance.now() - t0) / 1000 / wall);
-      term.y = row; term.x = 0; term.rows[row] = [];
-      const bar = '█'.repeat(Math.round(p * 40)) + '░'.repeat(40 - Math.round(p * 40));
-      const saved = term.fg; term.fg = 10; for (const c of `  ${bar} `) tPut(c); term.fg = 15;
-      for (const c of `${Math.round(p * 100)}%  ${fmtN(Math.round(p * size))} bytes  1.420 cps`) tPut(c); term.fg = saved; tRender();
-      if (audio && Math.random() < 0.15) SFX.chatter(0.15);
-      if (p >= 1) break; await sleep(100);
-    }
-    await print(`\n\n{10}  Transferencia completa. CRC-32 OK.{7}\n  Este juego ya esta en tu disco C: — escribe {14}${cmd}{7} en DOS para jugarlo.\n\n{8}  [Pulsa una tecla]{7}`, tok);
-    await anyKey(tok);
-  }
-}
-
-async function juegoPuerta(tok) {
-  const secret = 1 + Math.floor(Math.random() * 100);
-  await print('{cls}\n' + box('PUERTA: EL NUMERO SECRETO', ['', '  El SysOp penso un numero entre 1 y 100.', '  Tienes 7 intentos. ¡Suerte!', ''], 50) + '\n', tok);
-  const digits = [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'], ['5', '5'], ['6', '6'], ['7', '7'], ['8', '8'], ['9', '9'], ['0', '0'], ['\r', 'Enter']];
-  for (let i = 1; i <= 7; i++) {
-    await print(`{11}  Intento ${i}{7}: {15}`, tok);
-    const n = parseInt(await getLine(tok, 3, digits), 10);
-    if (!n) { await print('{8}  Escribe un numero.{7}\n', tok); i--; continue; }
-    if (n === secret) { await print(`{10}  ¡Correcto! Era ${secret}. Ganaste 10 minutos extra.{7}\n`, tok); break; }
-    await print(n < secret ? '{14}  Mas alto.{7}\n' : '{14}  Mas bajo.{7}\n', tok);
-    if (i === 7) await print(`{12}  Se acabaron los intentos. Era ${secret}.{7}\n`, tok);
-  }
-  await print('\n{8}  [Pulsa una tecla]{7}', tok); await anyKey(tok);
-}
-
-async function pasarelaInternet(tok) {
-  await print('{cls}\n{7}  Conectando con la pasarela Internet por UUCP', tok);
-  for (let i = 0; i < 6; i++) { await sleep(350); await print('.', tok); }
-  await print(' {10}OK{7}\n\n', tok); await sleep(300);
-  const ITEMS = [
-    ['¿Que es Internet?', 'Internet es una red de redes que une universidades y\nempresas de todo el mundo. Desde este BBS puedes leer\ncorreo y grupos de noticias Usenet; la pagina se\nactualiza una vez por noche, cuando el BBS llama al\nnodo UUCP de la universidad.'],
-    ['Tu correo', 'Buzon de entrada: 1 mensaje.\n\n  De: amigo@uni.cl (ficticio)\n  Asunto: ¿Ya probaste el Doom?\n\n  Lo baje del BBS anoche. Esta increible. Hay que\n  armar una red IPX para jugar en modo deathmatch.'],
-    ['Usenet: comp.sys.ibm.pc.games', 'Hilos de hoy (ficticios):\n\n  * Mejor tarjeta de sonido: ¿SB16 o Gravis UltraSound?\n  * Wolf3D vs. Blake Stone\n  * ¿Cuanta RAM necesita el Doom? (4 MB minimo)'],
-  ];
-  for (;;) {
-    await print('{cls}\n' + box('GOPHER · PASARELA INTERNET (SIMULADA)', ['', ...ITEMS.map(([t], i) => `   {14}${i + 1}{7}. ${t}`), '   {14}V{7}. Volver al BBS', ''], 60) + '\n{11}  Opcion{7}: {15}', tok);
-    const k = await getKey(tok, '123V', [...ITEMS.map(([t], i) => [String(i + 1), t]), ['V', 'Volver']]);
-    if (k === 'V') return;
-    const [t, body] = ITEMS[+k - 1];
-    await print(`{cls}\n{15}  ${t}\n{8}  ${'─'.repeat(56)}{7}\n\n` + body.split('\n').map(l => '  ' + l).join('\n') + '\n\n{8}  [Pulsa una tecla]{7}', tok);
-    await anyKey(tok);
-  }
+  if (audio) thump(audio.currentTime + 0.02, 90, 0.05, 0.25);
+  await print('{15}NO CARRIER{7}\n', tok, 3000); await sleep(1000);
 }
 
 async function bbsStart() {
@@ -690,6 +590,8 @@ async function typeCommand(cmd) {
   finally { typing = false; setEnabled(true); screenEl.focus(); }
 }
 $('cmds').addEventListener('click', (e) => {
+  const lnk = e.target.closest('a[data-bbs]');
+  if (lnk) { ensureAudio(); feedKey(lnk.dataset.bbs, true); return; }   /* el enlace abre la sesion real; no se cancela */
   const b = e.target.closest('button'); if (!b || b.disabled) return;
   ensureAudio();
   if (b.dataset.bbs !== undefined) { SFX.key(true); feedKey(b.dataset.bbs === 'ENTER' ? '\r' : b.dataset.bbs); return; }
