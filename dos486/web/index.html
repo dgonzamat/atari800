@@ -664,39 +664,53 @@ async function nativeAvailable() {
   try { const st = await desktopApi.permissions.state('full-access'); return st === 'granted' || st === 'prompt'; } catch (_) { return false; }
 }
 const b64enc = (bytes) => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
+let desktopPlatform = /Windows/i.test(navigator.userAgent) ? 'win32' : '';
 function nativeConnect(host, port, handlers) {
   if (!/^[a-z0-9.-]+$/i.test(host) || !(port > 0 && port < 65536)) throw new Error('host o puerto invalido');
-  const win = desktopApi._platform === 'win32';
-  let proc;
-  if (win) {
+  const ps = () => {
     const script = PS_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port));
     let u = ''; for (const ch of script) { const c = ch.charCodeAt(0); u += String.fromCharCode(c & 255, c >> 8); }   /* UTF-16LE */
-    proc = desktopApi.childProcess.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', btoa(u)]);
-  } else {
-    proc = desktopApi.childProcess.spawn('python3', ['-u', '-c', PY_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port))]);
-  }
-  let pending = '', done = false;
+    return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', btoa(u)];
+  };
+  const py = () => ['-u', '-c', PY_BRIDGE.replace('__HOST__', host).replace('__PORT__', String(port))];
+  /* candidatos en orden: si uno no existe en este PC (ENOENT), se prueba el siguiente */
+  const cands = desktopPlatform === 'win32'
+    ? [['powershell.exe', ps], ['pwsh.exe', ps], ['python.exe', py], ['py.exe', py]]
+    : [['python3', py], ['python', py], ['pwsh', ps]];
+  let proc = null, opened = false, done = false, idx = 0, lastErr = '';
   const finish = (why) => { if (!done) { done = true; handlers.close(why); } };
-  proc.stdout.on('data', (chunk) => {
-    pending += chunk; let i;
-    while ((i = pending.indexOf('\n')) >= 0) {
-      const line = pending.slice(0, i).replace(/\r$/, ''); pending = pending.slice(i + 1);
-      if (line === 'C') handlers.open();
-      else if (line[0] === 'D') { const bin = atob(line.slice(1)); const out = new Array(bin.length); for (let k = 0; k < bin.length; k++) out[k] = bin.charCodeAt(k); handlers.data(out); }
-      else if (line === 'X') finish('');
-      else if (line[0] === 'E') finish(line.slice(1));
-    }
-  });
-  proc.on('error', (e) => finish(String(e && e.message || e)));
-  proc.on('exit', () => finish(''));
+  const start = () => {
+    if (idx >= cands.length) { finish(lastErr || 'no se encontro PowerShell ni Python en este PC'); return; }
+    const [cmd, args] = cands[idx++];
+    const me = desktopApi.childProcess.spawn(cmd, args());
+    proc = me; let pending = '';
+    me.stdout.on('data', (chunk) => {
+      if (proc !== me) return;
+      pending += chunk; let i;
+      while ((i = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, i).replace(/\r$/, ''); pending = pending.slice(i + 1);
+        if (line === 'C') { opened = true; handlers.open(); }
+        else if (line[0] === 'D') { const bin = atob(line.slice(1)); const out = new Array(bin.length); for (let k = 0; k < bin.length; k++) out[k] = bin.charCodeAt(k); handlers.data(out); }
+        else if (line === 'X') finish('');
+        else if (line[0] === 'E') finish(line.slice(1));
+      }
+    });
+    me.on('error', (e) => {
+      if (proc !== me) return;
+      const m = String(e && e.message || e); lastErr = m;
+      if (!opened && /ENOENT|not found|no se encuentra/i.test(m)) start(); else finish(m);
+    });
+    me.on('exit', () => { if (proc === me && opened) finish(''); else if (proc === me && !done) setTimeout(() => { if (proc === me && !opened && !done) start(); }, 50); });
+  };
+  start();
   return {
-    send: (s) => { proc.stdin.write(b64enc(Array.from(s, c => c.charCodeAt(0) & 255)) + '\n').catch(() => {}); },
-    close: () => { proc.kill().catch(() => {}); },
+    send: (s) => { if (proc) proc.stdin.write(b64enc(Array.from(s, c => c.charCodeAt(0) & 255)) + '\n').catch(() => {}); },
+    close: () => { const p0 = proc; finish(''); if (p0) p0.kill().catch(() => {}); },
   };
 }
 desktopReady.then(async () => {
   if (!desktopApi) return;
-  try { desktopApi._platform = await desktopApi.os.platform(); } catch (_) { desktopApi._platform = ''; }
+  try { const pl = await desktopApi.os.platform(); if (pl) desktopPlatform = pl; } catch (_) {}
   try {   /* icono de la app instalada: monitor con "486" */
     const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
     g.fillStyle = '#cdc4ae'; g.fillRect(16, 24, 224, 176); g.fillStyle = '#000'; g.fillRect(36, 42, 184, 136);
