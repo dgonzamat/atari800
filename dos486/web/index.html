@@ -33,7 +33,8 @@ body {
 .text { position: absolute; inset: 0; margin: 0; padding: 4% 5%; color: var(--phosphor); font: 400 clamp(16px, 3.2vw, 26px)/1.15 var(--f-crt);
   white-space: pre-wrap; overflow: hidden; }
 .text .err { color: #ff6b6b; }
-.text.term { padding: 2% 2%; line-height: 1.12; white-space: pre; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.text.term { padding: 2% 2%; line-height: 1.25; white-space: pre; font-family: "JetBrains Mono", ui-monospace, monospace; }
+#tcv { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); image-rendering: auto; }
 .cmds button[data-bbs] .c::before, .cmds a.hk .c::before { content: none; }
 .cmds a.hk { min-width: 0; text-decoration: none; background: var(--panel); color: var(--ink); border: 1px solid var(--key); border-radius: 6px;
   padding: 8px 12px 9px; display: flex; flex-direction: column; gap: 2px; }
@@ -75,6 +76,7 @@ button:focus-visible { outline: 2px solid var(--key); outline-offset: 2px; }
   <div class="screen" id="screen" tabindex="0" aria-label="Pantalla de DOS">
     <canvas id="cv" width="720" height="400" hidden></canvas>
     <pre class="text" id="txt" hidden></pre>
+    <canvas id="tcv" hidden></canvas>
     <div class="off" id="off">Pulsa Encender</div>
     <input id="mkb" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Teclado para el BBS" style="position:absolute;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;padding:0">
   </div>
@@ -365,13 +367,16 @@ let bbsActive = false, bbsToken = 0, keyWaiter = null, savedCmds = null;
 class BbsAbort extends Error {}
 const check = (tok) => { if (!bbsActive || tok !== bbsToken) throw new BbsAbort(); };
 
+const tcv = $('tcv'), tctx = tcv.getContext('2d');
+let cellW = 8, cellH = 16;
 function fitTerm() {
-  const probe = document.createElement('span');
-  probe.style.cssText = 'font:100px "JetBrains Mono", monospace;position:absolute;visibility:hidden;white-space:pre';
-  probe.textContent = 'M'.repeat(COLS); document.body.appendChild(probe);
-  const cw = probe.getBoundingClientRect().width / COLS / 100; probe.remove();
-  const w = screenEl.clientWidth * 0.96, h = screenEl.clientHeight * 0.96;
-  txt.style.fontSize = Math.max(5, Math.min(w / (COLS * cw), h / (ROWS * 1.12))) + 'px';
+  const w = screenEl.clientWidth * 0.97, h = screenEl.clientHeight * 0.97;
+  cellW = Math.max(4, Math.floor(w / COLS)); cellH = Math.max(8, Math.floor(Math.min(h / ROWS, cellW * 2.1)));
+  const dpr = window.devicePixelRatio || 1;
+  tcv.width = COLS * cellW * dpr; tcv.height = ROWS * cellH * dpr;
+  tcv.style.width = COLS * cellW + 'px'; tcv.style.height = ROWS * cellH + 'px';
+  tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (bbsActive) tRender();
 }
 addEventListener('resize', () => { if (bbsActive) fitTerm(); });
 function tClear() { term.rows = Array.from({ length: ROWS }, () => []); term.x = 0; term.y = 0; tRender(); }
@@ -386,21 +391,41 @@ function tPut(ch) {
 }
 function tBack() { if (term.x > 0) { term.x--; term.rows[term.y][term.x] = undefined; } }
 const escH = (c) => c === '<' ? '&lt;' : c === '&' ? '&amp;' : c === '>' ? '&gt;' : c;
-function tRender() {
-  let html = '';
-  for (let y = 0; y < ROWS; y++) {
-    const row = term.rows[y] || []; let cur = -1, seg = '';
-    const flush = () => { if (seg) { if (cur < 0) html += seg; else { const f = cur & 15, b = cur >> 4; html += `<span style="color:${PAL[f]}${b ? ';background:' + PAL[b] : ''}">${seg}</span>`; } } seg = ''; };
-    const len = Math.max(row.length, y === term.y ? term.x + 1 : 0);
-    for (let x = 0; x < len; x++) {
-      if (y === term.y && x === term.x) { flush(); cur = -1; html += '<span class="blink">_</span>'; continue; }
-      const c = row[x], col = c ? (c[1] | ((c[2] || 0) << 4)) : 7, ch = c ? c[0] : ' ';
-      if (col !== cur) { flush(); cur = col; }
-      seg += escH(ch);
-    }
-    flush(); if (y < ROWS - 1) html += '\n';
+const shadeCache = new Map();
+function shadePattern(ch, f, b) {   /* sombreados CP437 como patron de puntos 4x4 */
+  const key = ch + f + ',' + b; if (shadeCache.has(key)) return shadeCache.get(key);
+  const c = document.createElement('canvas'); c.width = 4; c.height = 4; const g = c.getContext('2d');
+  g.fillStyle = PAL[b]; g.fillRect(0, 0, 4, 4); g.fillStyle = PAL[f];
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
+    const on = ch === '░' ? (x + 2 * y) % 4 === 0 : ch === '▒' ? (x + y) % 2 === 0 : (x + 2 * y) % 4 !== 0;
+    if (on) g.fillRect(x, y, 1, 1);
   }
-  txt.innerHTML = html;
+  const pat = tctx.createPattern(c, 'repeat'); shadeCache.set(key, pat); return pat;
+}
+function tRender() {
+  const fs = Math.min(cellW / 0.6, cellH * 0.82);
+  tctx.fillStyle = PAL[0]; tctx.fillRect(0, 0, COLS * cellW, ROWS * cellH);
+  tctx.font = `${fs}px "JetBrains Mono", ui-monospace, monospace`; tctx.textBaseline = 'middle'; tctx.textAlign = 'center';
+  for (let y = 0; y < ROWS; y++) {
+    const row = term.rows[y] || [];
+    for (let x = 0; x < COLS; x++) {
+      const c = row[x]; if (!c) continue;
+      const [ch, f, b] = c, X = x * cellW, Y = y * cellH;
+      if (b) { tctx.fillStyle = PAL[b]; tctx.fillRect(X, Y, cellW, cellH); }
+      if (ch === ' ' || ch === '\u00a0') continue;
+      tctx.fillStyle = PAL[f];
+      switch (ch) {   /* bloques: rectangulos exactos, sin huecos entre celdas */
+        case '█': tctx.fillRect(X, Y, cellW, cellH); break;
+        case '▀': tctx.fillRect(X, Y, cellW, Math.ceil(cellH / 2)); break;
+        case '▄': tctx.fillRect(X, Y + Math.floor(cellH / 2), cellW, Math.ceil(cellH / 2)); break;
+        case '▌': tctx.fillRect(X, Y, Math.ceil(cellW / 2), cellH); break;
+        case '▐': tctx.fillRect(X + Math.floor(cellW / 2), Y, Math.ceil(cellW / 2), cellH); break;
+        case '░': case '▒': case '▓': tctx.fillStyle = shadePattern(ch, f, b || 0); tctx.fillRect(X, Y, cellW, cellH); break;
+        default: tctx.fillText(ch, X + cellW / 2, Y + cellH / 2 + 1);
+      }
+    }
+  }
+  tctx.fillStyle = PAL[7]; tctx.fillRect(term.x * cellW, term.y * cellH + cellH - 2, cellW, 2);   /* cursor */
 }
 /* Escribe texto con codigos {n} de color (0-15) y {cls}, a la velocidad del modem */
 async function print(s, tok, cps) {
@@ -679,7 +704,7 @@ async function bbsStart() {
   bbsActive = true; const tok = ++bbsToken;
   savedCmds = $('cmds').innerHTML;
   if (ci) { try { ci.pause(); } catch (_) {} }
-  cv.hidden = true; txt.hidden = false; txt.classList.add('term'); fitTerm();
+  cv.hidden = true; txt.hidden = true; tcv.hidden = false; fitTerm();
   statusEl.textContent = 'Programa de terminal';
   try { await bbsSession(tok); }
   catch (e) { if (!(e instanceof BbsAbort)) console.error(e); }
@@ -689,7 +714,7 @@ function bbsEnd() {
   if (live) { try { live.ws.close(); } catch (_) {} live = null; } liveKeys = false;
   if (!bbsActive) return;
   bbsActive = false; bbsToken++; keyWaiter = null;
-  txt.classList.remove('term'); txt.style.fontSize = '';
+  tcv.hidden = true;
   $('cmds').innerHTML = savedCmds || ''; setEnabled(ready);
   if (ci) { try { ci.resume(); } catch (_) {} cv.hidden = false; txt.hidden = true; screenEl.focus(); }
   if (ready) statusEl.textContent = 'Listo. Un clic escribe el comando en DOS; sal del programa abierto antes de cargar otro.';

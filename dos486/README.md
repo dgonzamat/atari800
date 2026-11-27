@@ -137,6 +137,26 @@ módem y la línea `CONNECT` de la página son solo ambientación del marcado.
 Probado: el puente de fTelnet conectó con los cuatro BBS del directorio y devolvió
 sus pantallas de entrada reales.
 
+## App de escritorio (Electron)
+
+`desktop-app/` empaqueta la versión web como aplicación con su propia ventana
+(Electron 45.3.1). Un servidor local en 127.0.0.1 sirve los archivos y, como la
+página no está dentro del visor de claude.ai, el BBS se conecta dentro de la misma
+pantalla de DOS. F11 alterna pantalla completa.
+
+```bash
+web/build-web.sh
+```
+
+```bash
+desktop-app/build-app.sh
+```
+
+`PLATFORM=linux` o `PLATFORM=darwin` generan las otras plataformas. El ejecutable
+no está firmado: Windows SmartScreen pedirá "Más información → Ejecutar de todas
+formas". Probado (versión Linux, en Xvfb): DOOM, Commander Keen 4 y BBS reales
+(Vertrauen, Electronic Chicken) dentro de la ventana.
+
 ## LOADFIX
 
 Another World (`AWDEMO.EXE`) viene comprimido con EXEPACK y en QEMU fallaba con
